@@ -133,7 +133,6 @@ def build_node_gate_id_lookup(
             )
             raise ValueError(msg)
         node_lookup[node.node_id] = gate_buckets[key].popleft()
-    print("node lookup:", node_lookup)
     return node_lookup
 
 
@@ -290,16 +289,24 @@ def map_front_gates_to_pzs(
         gate_id = gate_id_lookup[seq_node.node_id]
         gate_info = graph.gate_info[gate_id]
         qubits = gate_info.qubits
+        preferred_pz = graph.preferred_pz_for_gate(gate_id)
+        if preferred_pz is not None and preferred_pz not in graph.pzs_name_map:
+            msg = f"Preferred processing zone '{preferred_pz}' for gate {gate_id} does not exist."
+            raise ValueError(msg)
 
         if len(qubits) == 1:
             ion = qubits[0]
-            pz = graph.map_to_pz[ion]
+            pz = preferred_pz or graph.map_to_pz[ion]
         elif len(qubits) == 2:
-            if gate_id not in graph.locked_gates:
-                pz = pick_pz_for_2_q_gate(graph, qubits[0], qubits[1])
+            if preferred_pz is not None:
+                pz = preferred_pz
                 graph.locked_gates[gate_id] = pz
             else:
-                pz = graph.locked_gates[gate_id]
+                if gate_id not in graph.locked_gates:
+                    pz = pick_pz_for_2_q_gate(graph, qubits[0], qubits[1])
+                    graph.locked_gates[gate_id] = pz
+                else:
+                    pz = graph.locked_gates[gate_id]
         else:
             msg = f"Unsupported gate arity {len(qubits)} for gate id {gate_id}."
             raise ValueError(msg)

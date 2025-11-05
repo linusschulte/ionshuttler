@@ -119,6 +119,16 @@ class Graph(nx.Graph):  # type: ignore [type-arg]
         self._gate_info = value
 
     @property
+    def gate_pz_assignment(self) -> dict[int, str]:
+        if not hasattr(self, "_gate_pz_assignment"):
+            self._gate_pz_assignment = {}
+        return self._gate_pz_assignment
+
+    @gate_pz_assignment.setter
+    def gate_pz_assignment(self, value: dict[int, str]) -> None:
+        self._gate_pz_assignment = value
+
+    @property
     def dag_gate_id_lookup(self) -> dict[int, int]:
         return self._dag_gate_id_lookup
 
@@ -195,3 +205,6 @@ class Graph(nx.Graph):  # type: ignore [type-arg]
         if gate_id is None:
             return ()
         return self.gate_qubits(gate_id)
+
+    def preferred_pz_for_gate(self, gate_id: int) -> str | None:
+        return self.gate_pz_assignment.get(gate_id)

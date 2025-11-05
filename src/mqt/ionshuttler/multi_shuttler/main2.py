@@ -132,6 +132,20 @@ def main(config: dict[str, Any]) -> None:
     initial_circuit = create_initial_sequence(qasm_file_path)
     graph.sequence = initial_circuit.sequence.copy()
     graph.gate_info = initial_circuit.gate_info
+    gate_partition_cfg = config.get("gate_partition")
+    gate_partition_for_run: dict[str, list[int]] | None = None
+    gate_assignment: dict[int, str] = {}
+    if gate_partition_cfg:
+        gate_partition_for_run = {}
+        for pz_name, gate_ids in gate_partition_cfg.items():
+            gate_ids_int = [int(gate) for gate in gate_ids]
+            gate_partition_for_run[pz_name] = gate_ids_int
+            for gate_id in gate_ids_int:
+                if gate_id in gate_assignment and gate_assignment[gate_id] != pz_name:
+                    msg = f"Gate id {gate_id} assigned to multiple processing zones ({gate_assignment[gate_id]}, {pz_name})."
+                    raise ValueError(msg)
+                gate_assignment[gate_id] = pz_name
+    graph.gate_pz_assignment = gate_assignment
     graph.locked_gates = {}
     graph.dag_gate_id_lookup = {}
     if graph.sequence:
@@ -229,7 +243,13 @@ def main(config: dict[str, Any]) -> None:
     print("\nStarted shuttling simulation...")
 
     # Run the main shuttling logic
-    final_timesteps = run_shuttle_main(graph, dag, cycle_or_paths_str, use_dag=use_dag)
+    final_timesteps = run_shuttle_main(
+        graph,
+        dag,
+        cycle_or_paths_str,
+        use_dag=use_dag,
+        gate_partition=gate_partition_for_run,
+    )
 
     # --- Results ---
     end_time = datetime.now()

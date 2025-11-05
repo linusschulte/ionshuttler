@@ -106,10 +106,16 @@ def create_priority_queue(
     graph.next_gate_at_pz = {pz.name: None for pz in graph.pzs}
     for gate_id in graph.sequence:
         qubits = graph.gate_qubits(gate_id)
+        preferred_pz = graph.preferred_pz_for_gate(gate_id)
+        if preferred_pz is not None and preferred_pz not in graph.pzs_name_map:
+            msg = f"Preferred processing zone '{preferred_pz}' for gate {gate_id} does not exist."
+            raise ValueError(msg)
         # 1-qubit gate
         if len(qubits) == 1:
             ion = qubits[0]
-            pz_name = graph.map_to_pz[ion]
+            pz_name = preferred_pz or graph.map_to_pz[ion]
+            if preferred_pz is not None:
+                graph.locked_gates[gate_id] = pz_name
 
             if graph.next_gate_at_pz[pz_name] is None:
                 graph.next_gate_at_pz[pz_name] = gate_id
@@ -121,11 +127,15 @@ def create_priority_queue(
 
         # 2-qubit gate
         elif len(qubits) == 2:
-            if gate_id not in graph.locked_gates:
-                pz_for_gate = pick_pz_for_2_q_gate(graph, qubits[0], qubits[1])
+            if preferred_pz is not None:
+                pz_for_gate = preferred_pz
                 graph.locked_gates[gate_id] = pz_for_gate
             else:
-                pz_for_gate = graph.locked_gates[gate_id]
+                if gate_id not in graph.locked_gates:
+                    pz_for_gate = pick_pz_for_2_q_gate(graph, qubits[0], qubits[1])
+                    graph.locked_gates[gate_id] = pz_for_gate
+                else:
+                    pz_for_gate = graph.locked_gates[gate_id]
 
             if graph.next_gate_at_pz[pz_for_gate] is None:
                 graph.next_gate_at_pz[pz_for_gate] = gate_id
@@ -200,17 +210,25 @@ def create_gate_info_list(graph: Graph) -> dict[str, list[int]]:
     gate_info_list: dict[str, list[int]] = {pz.name: [] for pz in graph.pzs}
     for gate_id in graph.sequence:
         qubits = graph.gate_qubits(gate_id)
+        preferred_pz = graph.preferred_pz_for_gate(gate_id)
+        if preferred_pz is not None and preferred_pz not in graph.pzs_name_map:
+            msg = f"Preferred processing zone '{preferred_pz}' for gate {gate_id} does not exist."
+            raise ValueError(msg)
         if len(qubits) == 1:
             ion = qubits[0]
-            pz = graph.map_to_pz[ion]
+            pz = preferred_pz or graph.map_to_pz[ion]
             if gate_info_list[pz] == []:
                 gate_info_list[pz].append(ion)
         elif len(qubits) == 2:
-            if gate_id not in graph.locked_gates:
-                pz = pick_pz_for_2_q_gate(graph, qubits[0], qubits[1])
+            if preferred_pz is not None:
+                pz = preferred_pz
                 graph.locked_gates[gate_id] = pz
             else:
-                pz = graph.locked_gates[gate_id]
+                if gate_id not in graph.locked_gates:
+                    pz = pick_pz_for_2_q_gate(graph, qubits[0], qubits[1])
+                    graph.locked_gates[gate_id] = pz
+                else:
+                    pz = graph.locked_gates[gate_id]
             if gate_info_list[pz] == []:
                 gate_info_list[pz].extend(qubits)
         # break if all pzs have a gate

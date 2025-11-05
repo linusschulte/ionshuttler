@@ -133,7 +133,14 @@ def shuttle(
         )
 
 
-def main(graph: Graph, dag: DAGDependency, cycle_or_paths: str, use_dag: bool) -> int:
+def main(
+    graph: Graph,
+    dag: DAGDependency,
+    cycle_or_paths: str,
+    use_dag: bool,
+    gate_partition: dict[str, list[int]] | None = None,
+) -> int:
+    print("gate partition:", gate_partition)
     timestep = 0
     max_timesteps = 1e6
     graph.state = get_ions(graph)
@@ -153,6 +160,21 @@ def main(graph: Graph, dag: DAGDependency, cycle_or_paths: str, use_dag: bool) -
             plot_pzs=True,
             filename=unique_folder / f"{graph.arch}_timestep_{timestep}.pdf",
         )
+
+    assignment_map: dict[int, str] = dict(graph.gate_pz_assignment)
+    if gate_partition is not None:
+        assignment_map.clear()
+        for pz_name, gate_ids in gate_partition.items():
+            if pz_name not in graph.pzs_name_map:
+                raise ValueError(f"Unknown processing zone '{pz_name}' in gate partition.")
+            for gate_id in gate_ids:
+                if gate_id in assignment_map and assignment_map[gate_id] != pz_name:
+                    raise ValueError(f"Gate id {gate_id} assigned to multiple processing zones.")
+                assignment_map[gate_id] = pz_name
+    for gate_id in assignment_map:
+        if gate_id not in graph.gate_info:
+            raise ValueError(f"Gate id {gate_id} in partition but not present in circuit.")
+    graph.gate_pz_assignment = assignment_map
 
     for pz in graph.pzs:
         pz.time_in_pz_counter = 0
