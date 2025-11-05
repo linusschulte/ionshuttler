@@ -33,3 +33,4 @@ benchmarks/
 run.py
 adapted_run_benchmarks.py
 /inputs
+/runs

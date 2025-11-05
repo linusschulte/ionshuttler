@@ -141,6 +141,7 @@ def main(config: dict[str, Any]) -> None:
                     raise ValueError(msg)
                 gate_assignment[gate_id] = pz_name
     graph.gate_pz_assignment = gate_assignment
+    graph.current_gate_by_pz = {}
     graph.locked_gates = {}
     graph.dag_gate_id_lookup = {}
     seq_length = len(graph.sequence)

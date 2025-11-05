@@ -208,3 +208,13 @@ class Graph(nx.Graph):  # type: ignore [type-arg]
 
     def preferred_pz_for_gate(self, gate_id: int) -> str | None:
         return self.gate_pz_assignment.get(gate_id)
+
+    @property
+    def current_gate_by_pz(self) -> dict[str, int]:
+        if not hasattr(self, "_current_gate_by_pz"):
+            self._current_gate_by_pz = {}
+        return self._current_gate_by_pz
+
+    @current_gate_by_pz.setter
+    def current_gate_by_pz(self, value: dict[str, int]) -> None:
+        self._current_gate_by_pz = value

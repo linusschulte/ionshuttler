@@ -50,6 +50,34 @@ def check_duplicates(graph: Graph) -> None:
             raise AssertionError(message)
 
 
+def build_plot_annotations(graph: Graph, in_process_ions: list[int]) -> tuple[str, str]:
+    current_map = graph.current_gate_by_pz
+    if not current_map:
+        return ("Current gates by PZ: none", "Gates in progress: none")
+
+    title_parts = []
+    progress_parts = []
+    in_process_set = set(in_process_ions)
+    for pz_name in sorted(current_map):
+        gate_id = current_map[pz_name]
+        try:
+            qubits = graph.gate_qubits(gate_id)
+            qasm = graph.gate_qasm(gate_id)
+        except KeyError:
+            qubits = ()
+            qasm = "unknown"
+        qubit_str = ",".join(str(q) for q in qubits) if qubits else "-"
+        title_parts.append(f"{pz_name}: gate {gate_id} (q={qubit_str})")
+        if qubits and in_process_set and all(q in in_process_set for q in qubits):
+            progress_parts.append(f"{gate_id}: {qasm}")
+    title_text = "Current gates by PZ: " + "; ".join(title_parts)
+    if progress_parts:
+        xlabel_text = "Gates in progress: " + "; ".join(progress_parts)
+    else:
+        xlabel_text = "Gates in progress: none"
+    return title_text, xlabel_text
+
+
 def find_pz_order(graph: Graph, gate_info_list: dict[str, list[int]]) -> list[str]:
     # find next processing zone that will execute a gate
     pz_order = []
@@ -76,6 +104,8 @@ def shuttle(
     timestep: int,
     cycle_or_paths: str,
     unique_folder: pathlib.Path,
+    title_text: str | None,
+    xlabel_text: str | None,
 ) -> None:
     preprocess(graph, priority_queue)
 
@@ -130,6 +160,8 @@ def shuttle(
             plot_cycle=False,
             plot_pzs=False,
             filename=unique_folder / f"{graph.arch}_timestep_{timestep}.png",
+            title_text=title_text,
+            xlabel_text=xlabel_text,
         )
 
 
@@ -175,6 +207,7 @@ def main(
         if gate_id not in graph.gate_info:
             raise ValueError(f"Gate id {gate_id} in partition but not present in circuit.")
     graph.gate_pz_assignment = assignment_map
+    graph.current_gate_by_pz = {}
 
     for pz in graph.pzs:
         pz.time_in_pz_counter = 0
@@ -209,6 +242,9 @@ def main(
         # priority queue is dict with ions as keys and pz as values
         # (for 2-qubit gates pz may not match the pz of the individual ion)
         priority_queue, next_gate_at_pz_dict = create_priority_queue(graph, pz_executing_gate_order)
+        graph.current_gate_by_pz = {
+            pz_name: gate_id for pz_name, gate_id in next_gate_at_pz_dict.items() if gate_id is not None
+        }
         next_gate_qubits_by_pz = {
             pz_name: () if gate_id is None else graph.gate_qubits(gate_id)
             for pz_name, gate_id in next_gate_at_pz_dict.items()
@@ -233,8 +269,18 @@ def main(
                     if state2 == pz.parking_edge and ion1 in next_qubits and ion2 in next_qubits:
                         graph.in_process.append(ion2)
 
+        title_text, xlabel_text = build_plot_annotations(graph, graph.in_process)
+
         # shuttle one timestep
-        shuttle(graph, priority_queue, timestep, cycle_or_paths, unique_folder)
+        shuttle(
+            graph,
+            priority_queue,
+            timestep,
+            cycle_or_paths,
+            unique_folder,
+            title_text=title_text,
+            xlabel_text=xlabel_text,
+        )
 
         # reset ions in process
         graph.in_process = []

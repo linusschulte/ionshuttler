@@ -24,6 +24,8 @@ def plot_state(
     plot_cycle: list[int] | bool = False,
     plot_pzs: bool = False,
     filename: Path | None = None,
+    title_text: str | None = None,
+    xlabel_text: str | None = None,
 ) -> None:
     if filename is None:
         filename = Path("graph.pdf")
@@ -121,6 +123,11 @@ def plot_state(
 
     if show_plot is True:
         plt.show()
+
+    if title_text:
+        plt.title(title_text)
+    if xlabel_text:
+        plt.xlabel(xlabel_text)
 
     if save_plot is True:
         plt.savefig(filename)
