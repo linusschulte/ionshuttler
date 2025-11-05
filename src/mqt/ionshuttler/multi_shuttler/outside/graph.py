@@ -8,7 +8,7 @@ from .graph_utils import create_dist_dict, create_idc_dictionary, get_idx_from_i
 
 if TYPE_CHECKING:
     from .processing_zone import ProcessingZone
-    from .types import Edge, Node
+    from .types import Edge, GateInfo, Node
 
 
 class Graph(nx.Graph):  # type: ignore [type-arg]
@@ -103,19 +103,35 @@ class Graph(nx.Graph):  # type: ignore [type-arg]
         self._state = value
 
     @property
-    def sequence(self) -> list[tuple[int, ...]]:
+    def sequence(self) -> list[int]:
         return self._sequence
 
     @sequence.setter
-    def sequence(self, value: list[tuple[int, ...]]) -> None:
+    def sequence(self, value: list[int]) -> None:
         self._sequence = value
 
     @property
-    def locked_gates(self) -> dict[tuple[int, ...], str]:
+    def gate_info(self) -> dict[int, GateInfo]:
+        return self._gate_info
+
+    @gate_info.setter
+    def gate_info(self, value: dict[int, GateInfo]) -> None:
+        self._gate_info = value
+
+    @property
+    def dag_gate_id_lookup(self) -> dict[int, int]:
+        return self._dag_gate_id_lookup
+
+    @dag_gate_id_lookup.setter
+    def dag_gate_id_lookup(self, value: dict[int, int]) -> None:
+        self._dag_gate_id_lookup = value
+
+    @property
+    def locked_gates(self) -> dict[int, str]:
         return self._locked_gates
 
     @locked_gates.setter
-    def locked_gates(self, value: dict[tuple[int, ...], str]) -> None:
+    def locked_gates(self, value: dict[int, str]) -> None:
         self._locked_gates = value
 
     @property
@@ -143,11 +159,11 @@ class Graph(nx.Graph):  # type: ignore [type-arg]
         self._map_to_pz = value
 
     @property
-    def next_gate_at_pz(self) -> dict[str, tuple[int, ...]]:
+    def next_gate_at_pz(self) -> dict[str, int | None]:
         return self._next_gate_at_pz
 
     @next_gate_at_pz.setter
-    def next_gate_at_pz(self, value: dict[str, tuple[int, ...]]) -> None:
+    def next_gate_at_pz(self, value: dict[str, int | None]) -> None:
         self._next_gate_at_pz = value
 
     @property
@@ -167,3 +183,15 @@ class Graph(nx.Graph):  # type: ignore [type-arg]
     @junction_nodes.setter
     def junction_nodes(self, value: list[Node]) -> None:
         self._junction_nodes = value
+
+    def gate_qubits(self, gate_id: int) -> tuple[int, ...]:
+        return self._gate_info[gate_id].qubits
+
+    def gate_qasm(self, gate_id: int) -> str:
+        return self._gate_info[gate_id].qasm
+
+    def next_gate_qubits(self, pz_name: str) -> tuple[int, ...]:
+        gate_id = self._next_gate_at_pz.get(pz_name)
+        if gate_id is None:
+            return ()
+        return self.gate_qubits(gate_id)

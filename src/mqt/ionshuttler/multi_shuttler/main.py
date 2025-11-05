@@ -3,7 +3,12 @@ import sys
 from datetime import datetime
 from typing import Any
 
-from .outside.compilation import create_dag, create_initial_sequence, create_updated_sequence_destructive
+from .outside.compilation import (
+    build_node_gate_id_lookup,
+    create_dag,
+    create_initial_sequence,
+    create_updated_sequence_destructive,
+)
 from .outside.cycles import create_starting_config, get_ions
 from .outside.graph_creator import GraphCreator, PZCreator
 from .outside.partition import get_partition
@@ -119,7 +124,11 @@ def main(config: dict[str, Any]) -> None:
     create_starting_config(graph, num_ions, seed=seed)
     graph.state = get_ions(graph)  # Get initial state {ion: edge_idc}
 
-    graph.sequence = create_initial_sequence(qasm_file_path)
+    initial_circuit = create_initial_sequence(qasm_file_path)
+    graph.sequence = initial_circuit.sequence.copy()
+    graph.gate_info = initial_circuit.gate_info
+    graph.locked_gates = {}
+    graph.dag_gate_id_lookup = {}
     seq_length = len(graph.sequence)
     print(f"Number of Gates: {seq_length}")
 
@@ -163,7 +172,9 @@ def main(config: dict[str, Any]) -> None:
     graph.map_to_pz = map_to_pz
 
     # Validation
-    unique_sequence_qubits = {item for sublist in graph.sequence for item in sublist}
+    unique_sequence_qubits = {
+        ion for gate_id in graph.sequence for ion in graph.gate_qubits(gate_id)
+    }
     missing_qubits = unique_sequence_qubits - set(all_partition_elements)
     if missing_qubits:
         print(f"Error: Qubits {missing_qubits} from sequence are not in any partition.")
@@ -179,20 +190,26 @@ def main(config: dict[str, Any]) -> None:
                 pz.getting_processed = []
             dag = create_dag(qasm_file_path)
             graph.locked_gates = {}
-            dag = create_dag(qasm_file_path)
+            graph.dag_gate_id_lookup = build_node_gate_id_lookup(dag)
             dag.copy()  # Keep a copy of the original DAG if needed later
             # Initial DAG-based sequence update
-            sequence, _, dag = create_updated_sequence_destructive(graph, qasm_file_path, dag, use_dag=True)
+            sequence, dag, gate_info = create_updated_sequence_destructive(
+                graph, qasm_file_path, dag, use_dag=True
+            )
             graph.sequence = sequence
+            graph.gate_info = gate_info
 
         except Exception as e:
             print(f"Error during DAG creation or initial sequence update: {e}")
             print("Falling back to non-compiled sequence.")
             use_dag = False  # Disable use_dag if setup fails
             dag = None
-            graph.sequence = create_initial_sequence(qasm_file_path)  # Revert to basic sequence
+            graph.sequence = initial_circuit.sequence.copy()  # Revert to basic sequence
+            graph.gate_info = initial_circuit.gate_info
+            graph.dag_gate_id_lookup = {}
     else:
         print("DAG disabled, using static QASM sequence.")
+        graph.dag_gate_id_lookup = {}
 
     # --- Run Simulation ---
 

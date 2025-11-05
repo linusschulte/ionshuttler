@@ -12,6 +12,7 @@ from qiskit.transpiler.passes import RemoveBarriers, RemoveFinalMeasurements
 from .cycles import get_state_idxs
 from .graph_utils import create_dist_dict, update_distance_map
 from .scheduling import pick_pz_for_2_q_gate
+from .types import GateInfo, ParsedCircuit
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -42,24 +43,37 @@ def extract_qubits_from_gate(gate_line: str) -> list[int]:
     return [int(match) for match in matches]
 
 
-def parse_qasm(filename: Path) -> list[tuple[int, ...]]:
-    """Parse a QASM file and return qubits used for each gate
-    preserving their order."""
-    gates_and_qubits = []
+def parse_qasm(filename: Path) -> ParsedCircuit:
+    """Parse a QASM file and return per-gate metadata indexed by a unique gate id."""
+    sequence: list[int] = []
+    gate_info: dict[int, GateInfo] = {}
     with filename.open(encoding="utf-8") as file:
-        for _line in file:
-            line = _line.strip()
+        for raw_line in file:
+            line = raw_line.strip()
+
+            if not line:
+                continue
+
+            if line.startswith(("//", "#")):
+                continue
 
             # Check if line represents a gate operation
-            if not line.startswith(("OPENQASM", "include", "qreg", "creg", "gate", "barrier", "measure")):
-                qubits = extract_qubits_from_gate(line)
-                if qubits:
-                    gates_and_qubits.append(tuple(qubits))
-    return gates_and_qubits
+            if line.startswith(("OPENQASM", "include", "qreg", "creg", "gate", "barrier", "measure")):
+                continue
+
+            qubits = extract_qubits_from_gate(line)
+            if not qubits:
+                continue
+
+            gate_id = len(sequence)
+            sequence.append(gate_id)
+            gate_info[gate_id] = GateInfo(qubits=tuple(qubits), qasm=line)
+
+    return ParsedCircuit(sequence=sequence, gate_info=gate_info)
 
 
-def compile_qasm_file(filename: Path) -> list[tuple[int, ...]]:
-    """Compile a QASM file and return the compiled sequence of qubits."""
+def compile_qasm_file(filename: Path) -> ParsedCircuit:
+    """Compile a QASM file and return the compiled sequence metadata."""
     # Check if the file is a valid QASM file
     if not is_qasm_file(filename):
         msg = "Invalid QASM file format"
@@ -84,6 +98,12 @@ def remove_node(dag: DAGDependency, node: DAGDepNode) -> None:
     #    for successor in dag.direct_successors(node.node_id):
     #        dag._multi_graph.remove_edge(node.node_id, successor)
     dag._multi_graph.remove_node(node.node_id)
+
+
+def build_node_gate_id_lookup(dag: DAGDependency) -> dict[int, int]:
+    """Return a mapping from DAG node id to parsed gate id following insertion order."""
+    op_nodes = [node for node in dag.get_nodes() if getattr(node, "type", None) == "op"]
+    return {node.node_id: gate_id for gate_id, node in enumerate(op_nodes)}
 
 
 def find_best_gate(
@@ -130,7 +150,7 @@ def create_dag(filename: Path) -> DAGDependency:
     return circuit_to_dagdependency(qc)
 
 
-def create_initial_sequence(filename: Path) -> list[tuple[int, ...]]:
+def create_initial_sequence(filename: Path) -> ParsedCircuit:
     # assert file is a qasm file
     assert is_qasm_file(filename), "The file is not a valid QASM file."
     return parse_qasm(filename)
@@ -141,45 +161,48 @@ def create_updated_sequence_destructive(
     filename: Path,
     dag_dep: DAGDependency,
     use_dag: bool,
-) -> tuple[list[tuple[int, ...]], list[int], DAGDependency]:
-    # assert file is a qasm file
+) -> tuple[list[int], DAGDependency | None, dict[int, GateInfo]]:
+    """Create an updated gate-id sequence, optionally using DAG ordering information."""
     assert is_qasm_file(filename), "The file is not a valid QASM file."
 
-    # generate sequence
-    if use_dag is False:
-        seq = parse_qasm(filename)
-        dag_dep = None
-    else:
-        working_dag = manual_copy_dag(dag_dep)
-        seq = []
+    parsed_circuit = parse_qasm(filename)
 
-        graph.dist_dict = create_dist_dict(graph)
-        state = get_state_idxs(graph)
-        dist_map = update_distance_map(graph, state)
+    if not use_dag:
+        return parsed_circuit.sequence.copy(), None, parsed_circuit.gate_info
 
-        # first_flag = True
-        while True:
-            first_gates = get_front_layer(working_dag)
-            if not first_gates:
-                break
-            # get all pzs of this front layer gates (in this logic have to reverse the dict)
-            pz_info_map = map_front_gates_to_pzs(graph, front_layer_nodes=first_gates)
-            # reverse it
-            gate_info_map = {value: key for key, values in pz_info_map.items() for value in values}
+    working_dag = manual_copy_dag(dag_dep)
+    graph.dist_dict = create_dist_dict(graph)
+    state = get_state_idxs(graph)
+    dist_map = update_distance_map(graph, state)
 
-            for pz_name in pz_info_map:
-                # only include pzs that can process a gate of front layer
-                if pz_info_map[pz_name]:
-                    first_gate_to_execute = find_best_gate(graph, pz_info_map[pz_name], dist_map, gate_info_map)
-                    # if first_flag == True:
-                    #     next_node = first_gate_to_execute
-                    # first_flag = False
-                    remove_node(working_dag, first_gate_to_execute)
-                    seq.append(tuple(first_gate_to_execute.qindices))
+    node_to_gate_id = build_node_gate_id_lookup(working_dag)
+    if len(node_to_gate_id) != len(parsed_circuit.sequence):
+        msg = (
+            "Mismatch between parsed gates and DAG operations: "
+            f"{len(parsed_circuit.sequence)} parsed vs {len(node_to_gate_id)} DAG nodes."
+        )
+        raise ValueError(msg)
 
-    flat_seq = [item for sublist in seq for item in sublist]
+    updated_sequence: list[int] = []
+    while True:
+        first_gates = get_front_layer(working_dag)
+        if not first_gates:
+            break
 
-    return seq, flat_seq, dag_dep  # , next_node
+        pz_info_map = map_front_gates_to_pzs(graph, front_layer_nodes=first_gates)
+        gate_info_map = {value: key for key, values in pz_info_map.items() for value in values}
+
+        for pz_name in pz_info_map:
+            if pz_info_map[pz_name]:
+                first_gate_to_execute = find_best_gate(graph, pz_info_map[pz_name], dist_map, gate_info_map)
+                remove_node(working_dag, first_gate_to_execute)
+                gate_id = node_to_gate_id.get(first_gate_to_execute.node_id)
+                if gate_id is None:
+                    msg = f"Unable to map DAG node {first_gate_to_execute.node_id} to a gate id."
+                    raise KeyError(msg)
+                updated_sequence.append(gate_id)
+
+    return updated_sequence, dag_dep, parsed_circuit.gate_info
 
 
 def get_front_layer_non_destructive(dag: DAGDependency, virtually_processed_nodes: set[int]) -> list[DAGDepNode]:
@@ -199,29 +222,29 @@ def get_front_layer_non_destructive(dag: DAGDependency, virtually_processed_node
     return front_layer
 
 
-def map_front_gates_to_pzs(graph: Graph, front_layer_nodes: list[DAGDepNode]) -> dict[str, list[DAGDepNode]]:
+def map_front_gates_to_pzs(
+    graph: Graph,
+    front_layer_nodes: list[DAGDepNode],
+    gate_id_lookup: dict[int, int],
+) -> dict[str, list[DAGDepNode]]:
     """Create list of all front layer gates at each processing zone."""
     gates_of_pz_info: dict[str, list[DAGDepNode]] = {pz.name: [] for pz in graph.pzs}
     for seq_node in front_layer_nodes:
-        seq_elem = tuple(seq_node.qindices)
-        if len(seq_elem) == 1:
-            elem = seq_elem[0]
-            pz = graph.map_to_pz[elem]
-            # if gates_of_pz_info[pz] == []:
+        gate_id = gate_id_lookup[seq_node.node_id]
+        gate_info = graph.gate_info[gate_id]
+        qubits = gate_info.qubits
 
-        elif len(seq_elem) == 2:
-            # only pick processing zone for 2-qubit gate if not already locked -> then lock it
-            # TODO 26.03. (2): seq_elem: [11, 10], in locked_gates: (11, 10) -> checked diese if clause nicht
-            if seq_elem not in graph.locked_gates:
-                pz = pick_pz_for_2_q_gate(graph, seq_elem[0], seq_elem[1])
-                graph.locked_gates[seq_elem] = pz
+        if len(qubits) == 1:
+            ion = qubits[0]
+            pz = graph.map_to_pz[ion]
+        elif len(qubits) == 2:
+            if gate_id not in graph.locked_gates:
+                pz = pick_pz_for_2_q_gate(graph, qubits[0], qubits[1])
+                graph.locked_gates[gate_id] = pz
             else:
-                pz = graph.locked_gates[seq_elem]
-            # if gates_of_pz_info[pz] == []:
-            # gates_of_pz_info[pz].append(seq_elem[0])
-            # gates_of_pz_info[pz].append(seq_elem[1])
+                pz = graph.locked_gates[gate_id]
         else:
-            msg = "wrong gate type"
+            msg = f"Unsupported gate arity {len(qubits)} for gate id {gate_id}."
             raise ValueError(msg)
 
         gates_of_pz_info[pz].append(seq_node)
@@ -229,7 +252,12 @@ def map_front_gates_to_pzs(graph: Graph, front_layer_nodes: list[DAGDepNode]) ->
     return gates_of_pz_info
 
 
-def remove_processed_gates(graph: Graph, dag: DAGDependency, removed_nodes: dict[str, DAGDepNode]) -> None:
+def remove_processed_gates(
+    graph: Graph,
+    dag: DAGDependency,
+    gate_id_lookup: dict[int, int],
+    removed_nodes: dict[str, DAGDepNode],
+) -> None:
     """
     Remove the processed gates of each processing zone from both the DAG and sequence.
 
@@ -239,37 +267,43 @@ def remove_processed_gates(graph: Graph, dag: DAGDependency, removed_nodes: dict
         first_gates_by_pz: Dictionary mapping processing zones to their first gates
     """
     # Track which gates are removed
-    removed_gates = []
+    removed_gate_ids: list[int] = []
 
     # Process each processing zone's first gate
     for _pz_name, first_gate in removed_nodes.items():
-        # Remove the gate from the sequence
-        gate_indices = tuple(first_gate.qindices)
-        if gate_indices in graph.sequence:
-            graph.sequence.remove(gate_indices)
-            removed_gates.append(first_gate)
-            # print(f"Removed gate {gate_indices} from sequence for PZ {pz_name}")
+        gate_id = gate_id_lookup.get(first_gate.node_id)
+        if gate_id is None:
+            continue
+
+        if gate_id in graph.sequence:
+            graph.sequence.remove(gate_id)
+            removed_gate_ids.append(gate_id)
 
         # Remove the gate from the DAG
         node_id = first_gate.node_id
         if dag.get_node(node_id):
             dag._multi_graph.remove_node(node_id)
             # print(f"Removed node {node_id} from DAG for PZ {pz_name}")
+        gate_id_lookup.pop(first_gate.node_id, None)
 
 
 def get_all_first_gates_and_update_sequence_non_destructive(
     graph: Graph,
     dag: DAGDependency,
+    gate_id_lookup: dict[int, int] | None = None,
     max_rounds: int = 5,
 ) -> dict[str, DAGDepNode]:
     """Get the first gates from the DAG for each processing zone (only first round, so they are simultaneously processable).
     Continue finding the subsequent "first gates" and update the sequence accordingly.
     Creates a compiled list of gates (ordered) for each pz from the DAG Dependency."""
 
-    ordered_sequence = []
-    processed_nodes: set[DAGDepNode] = set()  # Track nodes we've "virtually removed"
+    if gate_id_lookup is None:
+        gate_id_lookup = getattr(graph, "dag_gate_id_lookup", build_node_gate_id_lookup(dag))
+
+    ordered_sequence: list[int] = []
+    processed_nodes: set[int] = set()  # Track nodes we've "virtually removed"
     # Dictionary to store the first gate for each processing zone
-    first_nodes_by_pz = {}
+    first_nodes_by_pz: dict[str, DAGDepNode] = {}
 
     # update dist map
     state = get_state_idxs(graph)
@@ -282,11 +316,11 @@ def get_all_first_gates_and_update_sequence_non_destructive(
         if not front_layer_nodes:
             break
 
-        pz_info_map = map_front_gates_to_pzs(graph, front_layer_nodes)
+        pz_info_map = map_front_gates_to_pzs(graph, front_layer_nodes, gate_id_lookup)
         gate_info_map = {value: key for key, values in pz_info_map.items() for value in values}
 
         # Track gates processed in this round to ensure maximum parallelism
-        round_processed_gates = []
+        round_processed_gates: list[DAGDepNode] = []
 
         # Process one gate for each processing zone that has available gates
         for pz_name in pz_info_map:
@@ -301,16 +335,24 @@ def get_all_first_gates_and_update_sequence_non_destructive(
                 # Add to the processed list for this round
                 round_processed_gates.append(best_gate)
 
+                gate_id = gate_id_lookup.get(best_gate.node_id)
+                if gate_id is None:
+                    msg = f"No gate id mapped for node {best_gate.node_id}"
+                    raise KeyError(msg)
+
                 # Update the ordered sequence
-                ordered_sequence.append(tuple(best_gate.qindices))
+                ordered_sequence.append(gate_id)
 
                 # Mark as processed
                 processed_nodes.add(best_gate.node_id)
 
         # Remove all processed gates from the original sequence
-        for gate in round_processed_gates:
-            if tuple(gate.qindices) in graph.sequence:
-                graph.sequence.remove(tuple(gate.qindices))
+        for gate_node in round_processed_gates:
+            gate_id = gate_id_lookup.get(gate_node.node_id)
+            if gate_id is None:
+                continue
+            if gate_id in graph.sequence:
+                graph.sequence.remove(gate_id)
 
     # Update the final sequence
     graph.sequence = ordered_sequence + graph.sequence
