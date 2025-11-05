@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 from typing import TYPE_CHECKING
 
@@ -100,10 +101,40 @@ def remove_node(dag: DAGDependency, node: DAGDepNode) -> None:
     dag._multi_graph.remove_node(node.node_id)
 
 
-def build_node_gate_id_lookup(dag: DAGDependency) -> dict[int, int]:
-    """Return a mapping from DAG node id to parsed gate id following insertion order."""
-    op_nodes = [node for node in dag.get_nodes() if getattr(node, "type", None) == "op"]
-    return {node.node_id: gate_id for gate_id, node in enumerate(op_nodes)}
+def build_node_gate_id_lookup(
+    dag: DAGDependency,
+    gate_info: dict[int, GateInfo],
+) -> dict[int, int]:
+    """Return a mapping from DAG node id to parsed gate id matching gate metadata."""
+    from collections import defaultdict, deque
+
+    gate_buckets: dict[tuple[tuple[int, ...], str], deque[int]] = defaultdict(deque)
+    for gate_id in sorted(gate_info):
+        meta = gate_info[gate_id]
+        qasm_base = re.split(r'[\(\s\[]', meta.qasm)[0]
+        gate_buckets[(meta.qubits, qasm_base)].append(gate_id)
+
+    #print("GATE BUCKETS:", {k: list(v) for k, v in gate_buckets.items()})
+
+    node_lookup: dict[int, int] = {}
+    for node in dag.topological_nodes():  # type: ignore[attr-defined]
+        #print("NODE:", node.node_id, node.op, node.qindices)
+        if getattr(node, "type", None) != "op":
+            continue
+        qubits = tuple(node.qindices)
+        qasm_repr = getattr(node.op, "qasm", None)
+        qasm_str = qasm_repr() if callable(qasm_repr) else node.op.name
+        key = (qubits, qasm_str)
+        #print("KEY:", key)
+        if key not in gate_buckets or not gate_buckets[key]:
+            msg = (
+                f"No gate metadata matches DAG node {node.node_id} "
+                f"(op={node.op}, qubits={qubits})."
+            )
+            raise ValueError(msg)
+        node_lookup[node.node_id] = gate_buckets[key].popleft()
+    print("node lookup:", node_lookup)
+    return node_lookup
 
 
 def find_best_gate(
@@ -175,7 +206,16 @@ def create_updated_sequence_destructive(
     state = get_state_idxs(graph)
     dist_map = update_distance_map(graph, state)
 
-    node_to_gate_id = build_node_gate_id_lookup(working_dag)
+    node_to_gate_id = build_node_gate_id_lookup(working_dag, graph.gate_info)
+    if graph.debug_gate_tracking:
+        print("Debug: DAG node to gate ID mapping (first 5):")
+        for idx, (node_id, gate_id) in enumerate(node_to_gate_id.items()):
+            gate_meta = parsed_circuit.gate_info[gate_id]
+            print(
+                f"  #{idx} node {node_id}: gate_id {gate_id}, qubits {gate_meta.qubits}, qasm '{gate_meta.qasm}'"
+            )
+            if idx >= 4:
+                break
     if len(node_to_gate_id) != len(parsed_circuit.sequence):
         msg = (
             "Mismatch between parsed gates and DAG operations: "
@@ -189,7 +229,11 @@ def create_updated_sequence_destructive(
         if not first_gates:
             break
 
-        pz_info_map = map_front_gates_to_pzs(graph, front_layer_nodes=first_gates)
+        pz_info_map = map_front_gates_to_pzs(
+            graph,
+            front_layer_nodes=first_gates,
+            gate_id_lookup=node_to_gate_id,
+        )
         gate_info_map = {value: key for key, values in pz_info_map.items() for value in values}
 
         for pz_name in pz_info_map:
@@ -201,6 +245,19 @@ def create_updated_sequence_destructive(
                     msg = f"Unable to map DAG node {first_gate_to_execute.node_id} to a gate id."
                     raise KeyError(msg)
                 updated_sequence.append(gate_id)
+
+    if graph.debug_gate_tracking:
+        print("Debug: Parsed vs DAG-derived sequence IDs (first 20):")
+        for idx, (parsed_id, dag_id) in enumerate(
+            zip(parsed_circuit.sequence, updated_sequence)
+        ):
+            print(
+                f"  index {idx}: parsed {parsed_id}, dag {dag_id}, "
+                f"qubits parsed {parsed_circuit.gate_info[parsed_id].qubits}, "
+                f"qubits dag {parsed_circuit.gate_info[dag_id].qubits}"
+            )
+            if idx >= 19:
+                break
 
     return updated_sequence, dag_dep, parsed_circuit.gate_info
 
@@ -278,6 +335,8 @@ def remove_processed_gates(
         if gate_id in graph.sequence:
             graph.sequence.remove(gate_id)
             removed_gate_ids.append(gate_id)
+            if graph.debug_gate_tracking:
+                print(f"Debug: Removed gate id {gate_id} from sequence for PZ {_pz_name}")
 
         # Remove the gate from the DAG
         node_id = first_gate.node_id
@@ -298,7 +357,7 @@ def get_all_first_gates_and_update_sequence_non_destructive(
     Creates a compiled list of gates (ordered) for each pz from the DAG Dependency."""
 
     if gate_id_lookup is None:
-        gate_id_lookup = getattr(graph, "dag_gate_id_lookup", build_node_gate_id_lookup(dag))
+        gate_id_lookup = getattr(graph, "dag_gate_id_lookup", build_node_gate_id_lookup(dag, graph.gate_info))
 
     ordered_sequence: list[int] = []
     processed_nodes: set[int] = set()  # Track nodes we've "virtually removed"
