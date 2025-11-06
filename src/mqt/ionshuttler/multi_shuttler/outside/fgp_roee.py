@@ -12,11 +12,14 @@ if TYPE_CHECKING:
     from .graph import Graph
     from .types import GateInfo
 
-DEBUG_ENABLED=False
+DEBUG_ENABLED=1
 
 if DEBUG_ENABLED:
     import matplotlib.pyplot as plt
     import networkx as nx
+from collections import defaultdict
+import numpy as np
+from scipy.spatial import ConvexHull
 
 DEBUG_PLOT_AVAILABLE = DEBUG_ENABLED and "plt" in globals() and "nx" in globals()
 DEBUG_PLOT_DIR = Path("runs/fgp_debug") if DEBUG_ENABLED else None
@@ -130,8 +133,7 @@ def compute_gate_partition(
         # Build adjacency representation for this slice's weighted graph
         neighbor_map = _build_neighbor_map(weights, num_qubits)
         
-        if DEBUG_PLOT_AVAILABLE:
-            _plot_slice_graph(slice_index, weights, required_edges, num_qubits)
+        
 
         # Apply relaxed OEE to satisfy current slice constraints while minimizing cut weight
         assignment = _roee_partition(
@@ -142,6 +144,8 @@ def compute_gate_partition(
             capacity,
             max_iterations_multiplier,
         )
+        if DEBUG_PLOT_AVAILABLE:
+            _plot_slice_graph(slice_index, weights, required_edges, num_qubits, assignment)
         assignments.append(assignment.copy())
         _debug(f"Assignment for slice {slice_index}: {assignment}")
         previous_assignment = assignment
@@ -639,6 +643,7 @@ def _plot_slice_graph(
     weights: dict[tuple[int, int], float],
     required_edges: set[tuple[int, int]],
     num_qubits: int,
+    assignment: list[int]
 ) -> None:
     if not DEBUG_PLOT_AVAILABLE:
         return
@@ -655,7 +660,56 @@ def _plot_slice_graph(
     edge_colors = [graph[u][v]["color"] for u, v in graph.edges()]
     edge_widths = [graph[u][v]["width"] for u, v in graph.edges()]
     edge_labels = {edge: f"{graph[edge[0]][edge[1]]['weight']:.2f}" for edge in graph.edges()}
-    plt.figure(figsize=(6, 5))
+    
+    plt.figure(figsize=(8, 6))
+    
+    # Draw partition shapes first (behind everything)
+    import matplotlib.patches as patches
+    
+    partitions = defaultdict(list)
+    for qubit, partition in enumerate(assignment):
+        partitions[partition].append(qubit)
+    
+    # Define distinct colors for partitions
+    partition_colors = plt.cm.Set3(np.linspace(0, 1, len(partitions)))
+    
+    for partition_idx, (partition, qubits) in enumerate(partitions.items()):
+        if len(qubits) <= 1:
+            continue
+        
+        # Get positions of qubits in this partition
+        partition_pos = np.array([pos[qubit] for qubit in qubits])
+        
+        # Calculate convex hull to draw a shape around the partition
+        if len(qubits) >= 3:
+            try:
+                hull = ConvexHull(partition_pos)
+                hull_points = partition_pos[hull.vertices]
+                # Add some padding around the convex hull
+                center = np.mean(partition_pos, axis=0)
+                hull_points = center + 1.2 * (hull_points - center)
+                
+                polygon = patches.Polygon(
+                    hull_points, 
+                    closed=True, 
+                    alpha=0.2, 
+                    facecolor=partition_colors[partition_idx],
+                    edgecolor=partition_colors[partition_idx],
+                    linewidth=2,
+                    linestyle='--'
+                )
+                plt.gca().add_patch(polygon)
+            except:
+                # Fallback for degenerate cases
+                pass
+        elif len(qubits) == 2:
+            # For 2 qubits, draw a line with some thickness
+            p1, p2 = partition_pos
+            plt.plot([p1[0], p2[0]], [p1[1], p2[1]], 
+                    color=partition_colors[partition_idx], 
+                    linewidth=8, alpha=0.3, linestyle='--')
+    
+    # Draw the graph on top
     nx.draw(
         graph,
         pos,
@@ -667,12 +721,22 @@ def _plot_slice_graph(
         font_size=10,
     )
     nx.draw_networkx_edge_labels(graph, pos, edge_labels=edge_labels, font_size=8)
+    
+    # Add legend for partitions
+    legend_elements = []
+    for partition_idx, (partition, qubits) in enumerate(partitions.items()):
+        legend_elements.append(patches.Patch(
+            color=partition_colors[partition_idx], 
+            alpha=0.5,
+            label=f'Partition {partition} ({len(qubits)} qubits)'
+        ))
+    
+    plt.legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(1.15, 1))
     plt.title(f"Slice {slice_index}")
     output_path = DEBUG_PLOT_DIR / f"slice_{slice_index:03d}.png"
     plt.tight_layout()
-    plt.savefig(output_path)
+    plt.savefig(output_path, bbox_inches='tight')
     plt.close()
-
 
 
 __all__ = ["FGPResult", "compute_gate_partition"]

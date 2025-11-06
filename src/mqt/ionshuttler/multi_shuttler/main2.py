@@ -261,6 +261,11 @@ def main(config: dict[str, Any]) -> None:
     graph.gate_pz_assignment = gate_assignment
     graph.current_gate_by_pz = {}
 
+    if gate_assignment:
+        print("Gate assignment to PZs:")
+        for pz_name, gate_ids in gate_partition_for_run.items():
+            print(f"  {pz_name}: {gate_ids}")
+
     # --- Run Simulation ---
 
     # Initialize PZ states

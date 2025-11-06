@@ -10,5 +10,7 @@
   "max_timesteps": 20000,
   "plot": false,
   "save": false,
-  "failing_junctions": 0
+  "failing_junctions": 0,
+  "debug_gate_tracking": false,
+  "_gate_partition_algorithm": {"name": "fgp_roee", "params": {"sigma": 1.0, "aggregate_slices": 1}}
 }

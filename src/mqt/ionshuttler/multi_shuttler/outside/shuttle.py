@@ -172,7 +172,6 @@ def main(
     use_dag: bool,
     gate_partition: dict[str, list[int]] | None = None,
 ) -> int:
-    print("gate partition:", gate_partition)
     timestep = 0
     max_timesteps = 1e6
     graph.state = get_ions(graph)
