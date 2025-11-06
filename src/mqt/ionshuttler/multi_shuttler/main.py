@@ -128,22 +128,13 @@ def main(config: dict[str, Any]) -> None:
     graph.sequence = initial_circuit.sequence.copy()
     graph.gate_info = initial_circuit.gate_info
     gate_partition_cfg = config.get("gate_partition")
-    gate_partition_for_run: dict[str, list[int]] | None = None
-    gate_assignment: dict[int, str] = {}
-    if gate_partition_cfg:
-        gate_partition_for_run = {}
-        for pz_name, gate_ids in gate_partition_cfg.items():
-            gate_ids_int = [int(gate) for gate in gate_ids]
-            gate_partition_for_run[pz_name] = gate_ids_int
-            for gate_id in gate_ids_int:
-                if gate_id in gate_assignment and gate_assignment[gate_id] != pz_name:
-                    msg = f"Gate id {gate_id} assigned to multiple processing zones ({gate_assignment[gate_id]}, {pz_name})."
-                    raise ValueError(msg)
-                gate_assignment[gate_id] = pz_name
-    graph.gate_pz_assignment = gate_assignment
+    gate_partition_algorithm_cfg = config.get("gate_partition_algorithm")
+    graph.gate_pz_assignment = {}
     graph.current_gate_by_pz = {}
     graph.locked_gates = {}
     graph.dag_gate_id_lookup = {}
+    gate_partition_for_run: dict[str, list[int]] | None = None
+    gate_assignment: dict[int, str] = {}
     seq_length = len(graph.sequence)
     print(f"Number of Gates: {seq_length}")
 
@@ -225,6 +216,42 @@ def main(config: dict[str, Any]) -> None:
     else:
         print("DAG disabled, using static QASM sequence.")
         graph.dag_gate_id_lookup = {}
+
+    if gate_partition_cfg:
+        gate_partition_for_run = {}
+        for pz_name, gate_ids in gate_partition_cfg.items():
+            gate_ids_int = [int(gate) for gate in gate_ids]
+            gate_partition_for_run[pz_name] = gate_ids_int
+            for gate_id in gate_ids_int:
+                if gate_id in gate_assignment and gate_assignment[gate_id] != pz_name:
+                    msg = (
+                        f"Gate id {gate_id} assigned to multiple processing zones "
+                        f"({gate_assignment[gate_id]}, {pz_name})."
+                    )
+                    raise ValueError(msg)
+                gate_assignment[gate_id] = pz_name
+    elif gate_partition_algorithm_cfg:
+        if isinstance(gate_partition_algorithm_cfg, dict):
+            algo_name = gate_partition_algorithm_cfg.get("name", "fgp_roee")
+            algo_params = gate_partition_algorithm_cfg.get("params", {})
+        else:
+            algo_name = str(gate_partition_algorithm_cfg)
+            algo_params = {}
+        algo_name_lower = algo_name.lower()
+        if algo_name_lower == "fgp_roee":
+            from .outside.fgp_roee import compute_gate_partition
+
+            if "num_clusters" not in algo_params:
+                algo_params["num_clusters"] = len(graph.pzs)
+            result = compute_gate_partition(graph, **algo_params)
+            gate_partition_for_run = result.gate_partition_by_pz
+            gate_assignment = result.gate_assignment
+        else:
+            msg = f"Unknown gate partition algorithm '{algo_name}'."
+            raise ValueError(msg)
+
+    graph.gate_pz_assignment = gate_assignment
+    graph.current_gate_by_pz = {}
 
     # --- Run Simulation ---
 
