@@ -262,9 +262,9 @@ def main(
     use_dag: bool,
     gate_partition: dict[str, list[int]] | None = None,
     slice_plan: list[SlicePlan] | None = None,
+    max_timesteps: int = 100000,
 ) -> int:
     timestep = 0
-    max_timesteps = 1e6
     graph.state = get_ions(graph)
 
     gates_processed = []
@@ -315,6 +315,8 @@ def main(
 
     locked_gates: dict[int, str] = {}
     while timestep < max_timesteps:
+        if timestep % 10 == 0:
+            print(f"\rTimestep: {timestep}/{int(max_timesteps)}", end="", flush=True)
 
         for pz in graph.pzs:
             pz.rotate_entry = False

@@ -1,11 +1,16 @@
+import argparse
+import json
 import pathlib
+import re
+import subprocess
 import sys
-from datetime import datetime
+import tempfile
+from datetime import datetime, timedelta
+from itertools import product
 from typing import Any
-import argparse, json
+
 import h5py
 import numpy as np
-from itertools import product
 
 
 from outside.compilation import (
@@ -20,17 +25,86 @@ from outside.partition import get_partition
 from outside.processing_zone import ProcessingZone
 from outside.shuttle import main as run_shuttle_main
 
+LEGACY_CLI_COMMAND = "mqt-ionshuttler-heuristic"
+_SIM_TIMESTEPS_RE = re.compile(r"Simulation finished in\s+(?P<value>\d+)\s+timesteps")
+_CPU_TIME_RE = re.compile(r"Total CPU time:\s+(?P<value>.+)")
+
+
+def _parse_cpu_time(value: str) -> timedelta:
+    normalized = value.strip()
+    days = 0
+    if "day" in normalized:
+        day_part, normalized = normalized.split(",", 1)
+        day_tokens = day_part.strip().split()
+        if day_tokens:
+            days = int(day_tokens[0])
+        normalized = normalized.strip()
+    hours_str, minutes_str, seconds_str = normalized.split(":")
+    hours = int(hours_str)
+    minutes = int(minutes_str)
+    seconds = float(seconds_str)
+    return timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+
+
+def _extract_legacy_metrics(output: str) -> tuple[int, timedelta]:
+    final_timesteps: int | None = None
+    cpu_time: timedelta | None = None
+    for line in output.splitlines():
+        if final_timesteps is None:
+            timestep_match = _SIM_TIMESTEPS_RE.search(line)
+            if timestep_match:
+                final_timesteps = int(timestep_match.group("value"))
+        if cpu_time is None:
+            cpu_match = _CPU_TIME_RE.search(line)
+            if cpu_match:
+                cpu_time = _parse_cpu_time(cpu_match.group("value"))
+    if final_timesteps is None or cpu_time is None:
+        msg = "Unable to parse legacy CLI output for timesteps or CPU time."
+        raise RuntimeError(f"{msg}\nFull output:\n{output}")
+    return final_timesteps, cpu_time
+
+
+def run_legacy_cli_with_config(config: dict[str, Any]) -> tuple[int, timedelta]:
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp_file:
+        json.dump(config, tmp_file)
+        tmp_path = pathlib.Path(tmp_file.name)
+    try:
+        completed = subprocess.run(
+            [LEGACY_CLI_COMMAND, str(tmp_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"Legacy CLI command failed with exit code {exc.returncode}.\nOutput:\n{exc.stdout or ''}"
+        ) from exc
+    finally:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+    return _extract_legacy_metrics(completed.stdout)
+
+
+def should_use_legacy_cli(config: dict[str, Any]) -> bool:
+    return (
+        config.get("gate_partition_algorithm") is None
+        and config.get("gate_partition") is None
+    )
 
 def main(config: dict[str, Any]):
     # --- Extract Parameters from Config ---
     arch = config.get("arch")
     num_pzs_config = config.get("num_pzs", 1)
+    max_ions_per_pz = config.get("max_ions_per_pz", 2)
     seed = config.get("seed", 0)
     algorithm_name = config.get("algorithm_name")
     num_ions = config.get("num_ions")
     use_dag = config.get("use_dag", True)
     use_paths = config.get("use_paths", False)
-    config.get("max_timesteps", 100000)
+    max_timesteps = config.get("max_timesteps", 100000)
     plot_flag = config.get("plot", False)
     save_flag = config.get("save", False)
     failing_junctions = config.get("failing_junctions", 0)
@@ -67,7 +141,7 @@ def main(config: dict[str, Any]):
     m, n, v, h = arch
 
     # --- PZ Definitions ---
-    height = -4.5
+    height = -2.5
     pz_definitions = {
         "pz1": ProcessingZone(
             "pz1",
@@ -110,7 +184,7 @@ def main(config: dict[str, Any]):
     graph.mz_graph = mz_graph  # Attach MZ graph for BFS lookups if needed by Cycles/Paths
 
     graph.seed = seed
-    graph.max_num_parking = 2
+    graph.max_num_parking = max_ions_per_pz
     graph.pzs = pzs_to_use  # List of ProcessingZone objects
 
     graph.plot = plot_flag
@@ -257,9 +331,9 @@ def main(config: dict[str, Any]):
         if algo_name_lower == "fgp_roee":
             from outside.fgp_roee import compute_gate_partition
 
-
             if "num_clusters" not in algo_params:
-                algo_params["num_clusters"] = len(graph.pzs)
+                algo_params["num_clusters"] = config.get("num_pzs", 1)
+            print(algo_params)
             result = compute_gate_partition(graph, **algo_params)
             gate_partition_for_run = result.gate_partition_by_pz
             gate_assignment = result.gate_assignment
@@ -267,6 +341,28 @@ def main(config: dict[str, Any]):
                 graph.initialize_slice_plan(result.slice_plan)
             else:
                 graph.initialize_slice_plan(None)
+        elif algo_name_lower == "tdag":
+            if not use_dag or dag is None:
+                msg = "TDAG gate partitioning requires use_dag=True."
+                raise ValueError(msg)
+            from outside.tdag import compute_gate_partition_tdag
+
+            max_qubits = algo_params.get("k", 4)
+            tdag_result = compute_gate_partition_tdag(
+                graph,
+                dag,
+                max_qubits_per_block=max_qubits,
+            )
+            pz_names = [pz.name for pz in graph.pzs]
+            gate_partition_for_run = {pz_name: [] for pz_name in pz_names}
+            gate_assignment = {}
+            blocks = tdag_result.get("blocks", [])
+            for idx, block in enumerate(blocks):
+                pz_name = pz_names[idx % len(pz_names)]
+                gate_partition_for_run[pz_name].extend(block)
+                for gate_id in block:
+                    gate_assignment[gate_id] = pz_name
+            graph.initialize_slice_plan(None)
         else:
             msg = f"Unknown gate partition algorithm '{algo_name}'."
             raise ValueError(msg)
@@ -284,6 +380,10 @@ def main(config: dict[str, Any]):
         print("Gate assignment to PZs:")
         for pz_name, gate_ids in gate_partition_for_run.items():
             print(f"  {pz_name}: {gate_ids}")
+        if enforce_slice_plan:
+            print("Enforcing slice plan based on gate partitioning.")
+            for slice in slice_plan_for_run:
+                print(f"  Slice: {slice}")
 
     # --- Run Simulation ---
 
@@ -301,6 +401,7 @@ def main(config: dict[str, Any]):
         use_dag=use_dag,
         gate_partition=gate_partition_for_run,
         slice_plan=slice_plan_for_run,
+        max_timesteps=max_timesteps,
     )
 
     # --- Results ---
@@ -311,6 +412,14 @@ def main(config: dict[str, Any]):
     print(f"Total CPU time: {cpu_time}")
 
     return final_timesteps, cpu_time
+
+
+def execute_run(config: dict[str, Any]) -> tuple[int, timedelta]:
+    config_for_run = config.copy()
+    if should_use_legacy_cli(config_for_run):
+        print("Using legacy CLI entrypoint (mqt-ionshuttler-heuristic) for this configuration.")
+        return run_legacy_cli_with_config(config_for_run)
+    return main(config_for_run)
 
     # # --- Benchmarking Output ---
     # bench_filename = f"benchmarks/{start_time.strftime('%Y%m%d_%H%M%S')}_{algorithm_name}.txt"
@@ -333,6 +442,7 @@ def main(config: dict[str, Any]):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Compute heuristic shuttling schedules")
     parser.add_argument("config_file", help="Path to the JSON configuration file")
+    parser.add_argument("--run_meta_study", help="Run meta study with parameter sweeps y/n", default="n")
     args = parser.parse_args()
 
     try:
@@ -345,11 +455,13 @@ if __name__ == "__main__":
         print(f"Error: Could not parse JSON file {args.config_file}")
         sys.exit(1)
 
-    #main(config)
-    #exit()
+    if args.run_meta_study.lower() != "y":
+        #run single compilation
+        main(config)
+        exit()
 
     # Use a single results file (not datetime specific)
-    results_file = "outputs/simulation_results.h5"
+    results_file = f"outputs/simulation_results_{config['algorithm_name']}.h5"
     pathlib.Path("outputs").mkdir(exist_ok=True)
     
     # Helper function to check if parameter set exists
@@ -370,18 +482,19 @@ if __name__ == "__main__":
         return False
     
     # meta study overwrite:
-    num_pzs = [2,3,4]
-    ions_per_pz = [2,3,4]
-    grid_sizes = [3,4,5]
-    mz_trap_sizes = [1,2,3]
+    num_ions = [5,10,15]
+    num_pzs = [2,3]
+    ions_per_pz = [2,3]
+    grid_sizes = [3,5,7]
+    mz_trap_sizes = [1]
     dag_options = [True, False]
-    partitioning_options = [None, config.get('gate_partition_algorithm')]
+    partitioning_options = [None, config.get('gate_partition_algorithm')]  # None means no partitioning algorithm
     enforce_slice_plan_options = [True, False]
     
     valid_combinations = [
-        (num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice)
-        for num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice in product(
-            num_pzs, ions_per_pz, grid_sizes, mz_trap_sizes, dag_options, partitioning_options, enforce_slice_plan_options
+        (num_ion, num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice)
+        for num_ion, num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice in product(
+            num_ions, num_pzs, ions_per_pz, grid_sizes, mz_trap_sizes, dag_options, partitioning_options, enforce_slice_plan_options
         )
         if not (enforce_slice and partitioning_alg is None)
     ]
@@ -408,14 +521,15 @@ if __name__ == "__main__":
         print(f"Total combinations: {total_combinations}")
         print(f"Existing runs in file: {existing_runs}")
         
-        for num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice in valid_combinations:
+        for num_ion, num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice in valid_combinations:
             # Check if this parameter set already exists
             if parameter_set_exists(f, num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice):
-                print(f"\nSkipping existing parameter set: Grid {grid_size}x{grid_size}, MZ {mz_trap_size}, PZs {num_pz}, Ions/PZ {ions_pz}, DAG {use_dag}, Part {partitioning_alg}, Enforce {enforce_slice}")
+                print(f"\nSkipping existing parameter set: {num_ion} ions on {grid_size}x{grid_size} grid, MZ {mz_trap_size}, PZs {num_pz}, Ions/PZ {ions_pz}, DAG {use_dag}, Part {partitioning_alg}, Enforce {enforce_slice}")
                 skipped += 1
                 continue
             
             # Update config for this run
+            config["num_ions"] = num_ion
             config["arch"] = [grid_size, grid_size, mz_trap_size, mz_trap_size]
             config["num_pzs"] = num_pz
             config["max_ions_per_pz"] = ions_pz
@@ -426,14 +540,20 @@ if __name__ == "__main__":
                 config.pop("gate_partition_algorithm", None)
             else:
                 config["gate_partition_algorithm"] = partitioning_alg
+                if isinstance(partitioning_alg, dict):
+                    params = config["gate_partition_algorithm"].setdefault("params", {})
+                    params["num_clusters"] = num_pz
+                    params["capacity"] = ions_pz
             
             print(f"\n=== Run {result_index + 1} (New) ===")
             print(f"Grid: {grid_size}x{grid_size}, MZ trap size: {mz_trap_size}")
-            print(f"PZs: {num_pz}, Ions per PZ: {ions_pz}, Total ions: {num_pz * ions_pz}")
+            print(f"PZs: {num_pz}, Ions per PZ: {ions_pz}")
             print(f"DAG: {use_dag}, Partitioning: {partitioning_alg}, Enforce slice: {enforce_slice}")
             
             run_name = f'run_{result_index:04d}'
             run_group = results_group.create_group(run_name)
+
+            run_group.attrs['num_ions'] = num_ion
             run_group.attrs['num_pzs'] = num_pz
             run_group.attrs['ions_per_pz'] = ions_pz
             run_group.attrs['grid_size'] = grid_size
@@ -443,11 +563,15 @@ if __name__ == "__main__":
             run_group.attrs['enforce_slice_plan'] = enforce_slice
             
             try:
-                final_timesteps, cpu_time = main(config.copy())
-                
-                run_group.attrs['final_timesteps'] = final_timesteps
+                final_timesteps, cpu_time = execute_run(config)
+                if final_timesteps >= config.get("max_timesteps", 100000) - 1:
+                    run_group.attrs['success'] = False
+                    run_group.attrs['error_message'] = f"Simulation reached max timesteps ({final_timesteps})"
+                else:
+                    run_group.attrs['success'] = True
+                    run_group.attrs['final_timesteps'] = final_timesteps
                 run_group.attrs['cpu_time_seconds'] = cpu_time.total_seconds()
-                run_group.attrs['success'] = True
+                
                 
                 print(f"Completed: {final_timesteps} timesteps, {cpu_time.total_seconds():.2f}s CPU time")
                 
@@ -461,87 +585,3 @@ if __name__ == "__main__":
     
     print(f"\nAll simulations completed. Skipped {skipped} existing parameter sets.")
     print(f"Results saved to {results_file}")
-
-    # meta study overwrite:
-    num_pzs = [1,2,3,4]
-    ions_per_pz = [2,3,4]
-    grid_sizes = [3,4,5]
-    mz_trap_sizes = [1,2,3]
-    dag_options = [True, False]
-    partitioning_options = [None, config.get('gate_partition_algorithm')]  # None means no partitioning algorithm
-    enforce_slice_plan_options = [True, False]
-    
-    # Create HDF5 file for results
-    results_file = f"outputs/simulation_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.h5"
-    
-    with h5py.File(results_file, 'w') as f:
-        # Create datasets for results
-        results_group = f.create_group('results')
-        
-        # Store metadata
-        f.attrs['algorithm_name'] = config.get('algorithm_name', 'unknown')
-        f.attrs['base_num_ions'] = config.get('num_ions', 0)
-        f.attrs['seed'] = config.get('seed', 0)
-        f.attrs['created_at'] = datetime.now().isoformat()
-        
-        result_index = 0
-        valid_combinations = [
-            (num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice)
-            for num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice in product(
-                num_pzs, ions_per_pz, grid_sizes, mz_trap_sizes, dag_options, partitioning_options, enforce_slice_plan_options
-            )
-            if not (enforce_slice and partitioning_alg is None)
-        ]
-        total_combinations = len(valid_combinations)
-
-        print(f"Running {total_combinations} combinations...")
-
-        for num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice in valid_combinations:
-                
-            # Update config for this run
-            config["arch"] = [grid_size, grid_size, mz_trap_size, mz_trap_size]
-            config["num_pzs"] = num_pz
-            config["max_ions_per_pz"] = ions_pz
-            config["use_dag"] = use_dag
-            config["enforce_slice_plan"] = enforce_slice
-            
-            if partitioning_alg is None:
-                config.pop("gate_partition_algorithm", None)
-            else:
-                config["gate_partition_algorithm"] = partitioning_alg
-            
-            print(f"\n=== Run {result_index + 1}/{total_combinations} ===")
-            print(f"Grid: {grid_size}x{grid_size}, MZ trap size: {mz_trap_size}")
-            print(f"PZs: {num_pz}, Ions per PZ: {ions_pz}, Total ions: {num_pz * ions_pz}")
-            print(f"DAG: {use_dag}, Partitioning: {partitioning_alg}, Enforce slice: {enforce_slice}")
-            
-            run_name = f'run_{result_index:04d}'
-            run_group = results_group.create_group(run_name)
-            run_group.attrs['num_pzs'] = num_pz
-            run_group.attrs['ions_per_pz'] = ions_pz
-            run_group.attrs['grid_size'] = grid_size
-            run_group.attrs['mz_trap_size'] = mz_trap_size
-            run_group.attrs['use_dag'] = use_dag
-            run_group.attrs['partitioning_algorithm'] = str(partitioning_alg) if partitioning_alg else 'none'
-            run_group.attrs['enforce_slice_plan'] = enforce_slice
-            
-            try:
-                final_timesteps, cpu_time = main(config.copy())
-                
-                # Store results in HDF5
-                run_group.attrs['final_timesteps'] = final_timesteps
-                run_group.attrs['cpu_time_seconds'] = cpu_time.total_seconds()
-                run_group.attrs['success'] = True
-                
-                print(f"Completed: {final_timesteps} timesteps, {cpu_time.total_seconds():.2f}s CPU time")
-                
-            except Exception as e:
-                print(f"Failed: {str(e)}")
-                
-                # Store failure information
-                run_group.attrs['error_message'] = str(e)
-                run_group.attrs['success'] = False
-            
-            result_index += 1
-    
-    print(f"\nAll simulations completed. Results saved to {results_file}")

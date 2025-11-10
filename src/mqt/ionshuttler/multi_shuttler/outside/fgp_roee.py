@@ -86,7 +86,7 @@ def compute_gate_partition(
         gate_partition_by_pz = {pz.name: [] for pz in graph.pzs}
         return FGPResult([], gate_partition_by_pz, {}, [], [])
 
-    _debug("Starting FGP partitioning")
+    _debug("Starting FGP partitioning into", num_clusters, "clusters")
 
     # Setup: determine clusters and capacity constraints
     num_clusters = num_clusters or len(graph.pzs)
