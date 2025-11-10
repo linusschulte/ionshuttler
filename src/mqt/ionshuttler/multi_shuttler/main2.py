@@ -348,6 +348,8 @@ if __name__ == "__main__":
 
 
     # meta study overwrite:
+    num_pzs = [1,2,3,4]
+    ions_per_pz = [2,3,4,5]
     grid_sizes = [3,4,5,6]
     mz_trap_sizes = [1,2,3]
     dag_options = [True, False]
@@ -363,15 +365,15 @@ if __name__ == "__main__":
         
         # Store metadata
         f.attrs['algorithm_name'] = config.get('algorithm_name', 'unknown')
-        f.attrs['num_ions'] = config.get('num_ions', 0)
+        f.attrs['base_num_ions'] = config.get('num_ions', 0)
         f.attrs['seed'] = config.get('seed', 0)
         f.attrs['created_at'] = datetime.now().isoformat()
         
         result_index = 0
         valid_combinations = [
-            (grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice)
-            for grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice in product(
-                grid_sizes, mz_trap_sizes, dag_options, partitioning_options, enforce_slice_plan_options
+            (num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice)
+            for num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice in product(
+                num_pzs, ions_per_pz, grid_sizes, mz_trap_sizes, dag_options, partitioning_options, enforce_slice_plan_options
             )
             if not (enforce_slice and partitioning_alg is None)
         ]
@@ -379,10 +381,12 @@ if __name__ == "__main__":
 
         print(f"Running {total_combinations} combinations...")
 
-        for grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice in valid_combinations:
+        for num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice in valid_combinations:
                 
             # Update config for this run
             config["arch"] = [grid_size, grid_size, mz_trap_size, mz_trap_size]
+            config["num_pzs"] = num_pz
+            config["max_ions_per_pz"] = ions_pz
             config["use_dag"] = use_dag
             config["enforce_slice_plan"] = enforce_slice
             
@@ -393,18 +397,23 @@ if __name__ == "__main__":
             
             print(f"\n=== Run {result_index + 1}/{total_combinations} ===")
             print(f"Grid: {grid_size}x{grid_size}, MZ trap size: {mz_trap_size}")
+            print(f"PZs: {num_pz}, Ions per PZ: {ions_pz}, Total ions: {num_pz * ions_pz}")
             print(f"DAG: {use_dag}, Partitioning: {partitioning_alg}, Enforce slice: {enforce_slice}")
+            
+            run_name = f'run_{result_index:04d}'
+            run_group = results_group.create_group(run_name)
+            run_group.attrs['num_pzs'] = num_pz
+            run_group.attrs['ions_per_pz'] = ions_pz
+            run_group.attrs['grid_size'] = grid_size
+            run_group.attrs['mz_trap_size'] = mz_trap_size
+            run_group.attrs['use_dag'] = use_dag
+            run_group.attrs['partitioning_algorithm'] = str(partitioning_alg) if partitioning_alg else 'none'
+            run_group.attrs['enforce_slice_plan'] = enforce_slice
             
             try:
                 final_timesteps, cpu_time = main(config.copy())
                 
                 # Store results in HDF5
-                run_group = results_group.create_group(f'run_{result_index:04d}')
-                run_group.attrs['grid_size'] = grid_size
-                run_group.attrs['mz_trap_size'] = mz_trap_size
-                run_group.attrs['use_dag'] = use_dag
-                run_group.attrs['partitioning_algorithm'] = partitioning_alg if partitioning_alg else 'none'
-                run_group.attrs['enforce_slice_plan'] = enforce_slice
                 run_group.attrs['final_timesteps'] = final_timesteps
                 run_group.attrs['cpu_time_seconds'] = cpu_time.total_seconds()
                 run_group.attrs['success'] = True
@@ -415,16 +424,9 @@ if __name__ == "__main__":
                 print(f"Failed: {str(e)}")
                 
                 # Store failure information
-                run_group = results_group.create_group(f'run_{result_index:04d}')
-                run_group.attrs['grid_size'] = grid_size
-                run_group.attrs['mz_trap_size'] = mz_trap_size
-                run_group.attrs['use_dag'] = use_dag
-                run_group.attrs['partitioning_algorithm'] = partitioning_alg if partitioning_alg else 'none'
-                run_group.attrs['enforce_slice_plan'] = enforce_slice
                 run_group.attrs['error_message'] = str(e)
                 run_group.attrs['success'] = False
             
             result_index += 1
     
     print(f"\nAll simulations completed. Results saved to {results_file}")
-    

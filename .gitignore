@@ -34,3 +34,7 @@ run.py
 adapted_run_benchmarks.py
 /inputs
 /runs
+/outputs
+simulation_results_20251107_150334.h5
+simulation_results_20251107_150504.h5
+outputs/simulation_results_20251107_150946.h5
