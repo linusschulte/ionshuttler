@@ -345,12 +345,127 @@ if __name__ == "__main__":
         print(f"Error: Could not parse JSON file {args.config_file}")
         sys.exit(1)
 
+    #main(config)
+    #exit()
 
+    # Use a single results file (not datetime specific)
+    results_file = "outputs/simulation_results.h5"
+    pathlib.Path("outputs").mkdir(exist_ok=True)
+    
+    # Helper function to check if parameter set exists
+    def parameter_set_exists(f, num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice):
+        if 'results' not in f:
+            return False
+        results_group = f['results']
+        for run_name in results_group.keys():
+            run_group = results_group[run_name]
+            if (run_group.attrs.get('num_pzs') == num_pz and
+                run_group.attrs.get('ions_per_pz') == ions_pz and
+                run_group.attrs.get('grid_size') == grid_size and
+                run_group.attrs.get('mz_trap_size') == mz_trap_size and
+                run_group.attrs.get('use_dag') == use_dag and
+                run_group.attrs.get('partitioning_algorithm') == (str(partitioning_alg) if partitioning_alg else 'none') and
+                run_group.attrs.get('enforce_slice_plan') == enforce_slice):
+                return True
+        return False
+    
+    # meta study overwrite:
+    num_pzs = [2,3,4]
+    ions_per_pz = [2,3,4]
+    grid_sizes = [3,4,5]
+    mz_trap_sizes = [1,2,3]
+    dag_options = [True, False]
+    partitioning_options = [None, config.get('gate_partition_algorithm')]
+    enforce_slice_plan_options = [True, False]
+    
+    valid_combinations = [
+        (num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice)
+        for num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice in product(
+            num_pzs, ions_per_pz, grid_sizes, mz_trap_sizes, dag_options, partitioning_options, enforce_slice_plan_options
+        )
+        if not (enforce_slice and partitioning_alg is None)
+    ]
+    
+    # Open file in append mode, create if doesn't exist
+    with h5py.File(results_file, 'a') as f:
+        # Initialize results group if it doesn't exist
+        if 'results' not in f:
+            results_group = f.create_group('results')
+            f.attrs['algorithm_name'] = config.get('algorithm_name', 'unknown')
+            f.attrs['base_num_ions'] = config.get('num_ions', 0)
+            f.attrs['seed'] = config.get('seed', 0)
+            f.attrs['created_at'] = datetime.now().isoformat()
+        else:
+            results_group = f['results']
+        
+        # Count existing runs to determine next index
+        existing_runs = len(list(results_group.keys()))
+        result_index = existing_runs
+        
+        total_combinations = len(valid_combinations)
+        skipped = 0
+        
+        print(f"Total combinations: {total_combinations}")
+        print(f"Existing runs in file: {existing_runs}")
+        
+        for num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice in valid_combinations:
+            # Check if this parameter set already exists
+            if parameter_set_exists(f, num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice):
+                print(f"\nSkipping existing parameter set: Grid {grid_size}x{grid_size}, MZ {mz_trap_size}, PZs {num_pz}, Ions/PZ {ions_pz}, DAG {use_dag}, Part {partitioning_alg}, Enforce {enforce_slice}")
+                skipped += 1
+                continue
+            
+            # Update config for this run
+            config["arch"] = [grid_size, grid_size, mz_trap_size, mz_trap_size]
+            config["num_pzs"] = num_pz
+            config["max_ions_per_pz"] = ions_pz
+            config["use_dag"] = use_dag
+            config["enforce_slice_plan"] = enforce_slice
+            
+            if partitioning_alg is None:
+                config.pop("gate_partition_algorithm", None)
+            else:
+                config["gate_partition_algorithm"] = partitioning_alg
+            
+            print(f"\n=== Run {result_index + 1} (New) ===")
+            print(f"Grid: {grid_size}x{grid_size}, MZ trap size: {mz_trap_size}")
+            print(f"PZs: {num_pz}, Ions per PZ: {ions_pz}, Total ions: {num_pz * ions_pz}")
+            print(f"DAG: {use_dag}, Partitioning: {partitioning_alg}, Enforce slice: {enforce_slice}")
+            
+            run_name = f'run_{result_index:04d}'
+            run_group = results_group.create_group(run_name)
+            run_group.attrs['num_pzs'] = num_pz
+            run_group.attrs['ions_per_pz'] = ions_pz
+            run_group.attrs['grid_size'] = grid_size
+            run_group.attrs['mz_trap_size'] = mz_trap_size
+            run_group.attrs['use_dag'] = use_dag
+            run_group.attrs['partitioning_algorithm'] = str(partitioning_alg) if partitioning_alg else 'none'
+            run_group.attrs['enforce_slice_plan'] = enforce_slice
+            
+            try:
+                final_timesteps, cpu_time = main(config.copy())
+                
+                run_group.attrs['final_timesteps'] = final_timesteps
+                run_group.attrs['cpu_time_seconds'] = cpu_time.total_seconds()
+                run_group.attrs['success'] = True
+                
+                print(f"Completed: {final_timesteps} timesteps, {cpu_time.total_seconds():.2f}s CPU time")
+                
+            except Exception as e:
+                print(f"Failed: {str(e)}")
+                
+                run_group.attrs['error_message'] = str(e)
+                run_group.attrs['success'] = False
+            
+            result_index += 1
+    
+    print(f"\nAll simulations completed. Skipped {skipped} existing parameter sets.")
+    print(f"Results saved to {results_file}")
 
     # meta study overwrite:
     num_pzs = [1,2,3,4]
-    ions_per_pz = [2,3,4,5]
-    grid_sizes = [3,4,5,6]
+    ions_per_pz = [2,3,4]
+    grid_sizes = [3,4,5]
     mz_trap_sizes = [1,2,3]
     dag_options = [True, False]
     partitioning_options = [None, config.get('gate_partition_algorithm')]  # None means no partitioning algorithm
