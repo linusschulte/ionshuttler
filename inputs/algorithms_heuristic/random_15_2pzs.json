@@ -1,0 +1,17 @@
+{
+  "arch": [4, 4, 1, 1],
+  "num_pzs": 2,
+  "max_ions_per_pz" : 3,
+  "seed": 0,
+  "algorithm_name": "random_nativegates_quantinuum_tket",
+  "num_ions": 15,
+  "qasm_base_dir": "inputs/qasm_files",
+  "use_dag": true,
+  "use_paths": false,
+  "max_timesteps": 100000,
+  "plot": false,
+  "save": false,
+  "debug_gate_tracking": false,
+  "failing_junctions": 0,
+  "gate_partition_algorithm": {"name": "fgp_roee", "params": {"sigma": 1.0}}
+}

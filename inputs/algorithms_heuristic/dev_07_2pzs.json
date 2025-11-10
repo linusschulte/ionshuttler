@@ -1,0 +1,17 @@
+{
+  "arch": [3, 3, 1, 1],
+  "num_pzs": 2,
+  "max_ions_per_pz" : 2,
+  "seed": 0,
+  "algorithm_name": "development",
+  "num_ions": 7,
+  "qasm_base_dir": "inputs/qasm_files",
+  "use_dag": true,
+  "use_paths": false,
+  "max_timesteps": 100000,
+  "plot": false,
+  "save": false,
+  "debug_gate_tracking": false,
+  "failing_junctions": 0,
+  "gate_partition_algorithm": {"name": "fgp_roee", "params": {"sigma": 1, "aggregate_slices": 1}}
+}

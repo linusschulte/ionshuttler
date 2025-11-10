@@ -1,0 +1,16 @@
+{
+  "arch": [3, 3, 2, 2],
+  "num_pzs": 2,
+  "seed": 0,
+  "algorithm_name": "random_nativegates_quantinuum_tket",
+  "num_ions": 10,
+  "qasm_base_dir": "inputs/qasm_files",
+  "use_dag": false,
+  "partitioning": "timesliced",
+  "use_paths": false,
+  "max_timesteps": 100000,
+  "plot": false,
+  "save": false,
+  "failing_junctions": 0,
+  "partition_slices": []
+}
