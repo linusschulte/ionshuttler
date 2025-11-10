@@ -8,7 +8,7 @@ from .graph_utils import create_dist_dict, create_idc_dictionary, get_idx_from_i
 
 if TYPE_CHECKING:
     from .processing_zone import ProcessingZone
-    from .types import Edge, GateInfo, Node
+    from .types import Edge, GateInfo, Node, SlicePlan
 
 
 class Graph(nx.Graph):  # type: ignore [type-arg]
@@ -218,3 +218,50 @@ class Graph(nx.Graph):  # type: ignore [type-arg]
     @current_gate_by_pz.setter
     def current_gate_by_pz(self, value: dict[str, int]) -> None:
         self._current_gate_by_pz = value
+
+    def initialize_slice_plan(self, plan: list[SlicePlan] | None) -> None:
+        self.slice_plan = plan
+        if plan is None:
+            self.current_slice_index = 0
+            self.slice_remaining_gates = []
+            return
+        self.current_slice_index = 0
+        self.slice_remaining_gates = [
+            {gate for gates in slice_info.gates_by_pz.values() for gate in gates}
+            for slice_info in plan
+        ]
+        ordered_gates: list[int] = []
+        seen: set[int] = set()
+        for slice_info in plan:
+            for gates in slice_info.gates_by_pz.values():
+                for gate_id in gates:
+                    if gate_id not in seen:
+                        ordered_gates.append(gate_id)
+                        seen.add(gate_id)
+        if ordered_gates:
+            remaining = [gate_id for gate_id in self.sequence if gate_id not in seen]
+            self.sequence = ordered_gates + remaining
+
+    @property
+    def slice_plan(self) -> list[SlicePlan] | None:
+        return getattr(self, "_slice_plan", None)
+
+    @slice_plan.setter
+    def slice_plan(self, value: list[SlicePlan] | None) -> None:
+        self._slice_plan = value
+
+    @property
+    def current_slice_index(self) -> int:
+        return getattr(self, "_current_slice_index", 0)
+
+    @current_slice_index.setter
+    def current_slice_index(self, value: int) -> None:
+        self._current_slice_index = value
+
+    @property
+    def slice_remaining_gates(self) -> list[set[int]]:
+        return getattr(self, "_slice_remaining_gates", [])
+
+    @slice_remaining_gates.setter
+    def slice_remaining_gates(self, value: list[set[int]]) -> None:
+        self._slice_remaining_gates = value

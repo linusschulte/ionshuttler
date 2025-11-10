@@ -119,7 +119,7 @@ def plot_state(
     labels0, labels1 = labels
     plt.plot([], [], label=labels0)
     plt.plot([], [], label=labels1)
-    # plt.legend()
+
 
     if show_plot is True:
         plt.show()

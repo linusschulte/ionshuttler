@@ -445,8 +445,10 @@ def update_entry_and_exit_cycles(
     in_and_into_exit_moves_pz: dict[int, Edge],
     out_of_entry_moves_pz: list[Edge] | None,
     prio_queue: list[int],
+    plan_active_ions: set[int] | None = None,
 ) -> dict[int, list[Edge]]:
     # move ion out of parking edge if needed
+    plan_active_ions = plan_active_ions or set()
     ions_in_parking = find_ions_in_parking(graph, pz)
     ion_in_entry = find_ion_in_edge(graph, pz.entry_edge)
 
@@ -505,11 +507,14 @@ def update_entry_and_exit_cycles(
             # same as above
             # into exit move? dont move into exit if not all in prio queue (partitioned?) in front of you are in exit, exitconn or parking?
             for ion, edge_idc in in_and_into_exit_moves_pz.items():
+                if ion in plan_active_ions:
+                    continue
                 all_cycles[ion] = [edge_idc, edge_idc]
             # also stop out of parking moves since gate is not finished yet
             if pz.out_of_parking_cycle is not None:
                 ion = pz.out_of_parking_cycle
-                all_cycles[ion] = [pz.parking_edge, pz.parking_edge]
+                if ion not in plan_active_ions:
+                    all_cycles[ion] = [pz.parking_edge, pz.parking_edge]
 
     # remove ions if they would move to exit but their next gate is a 2-qubit gate and their gate is not yet in locked_gates (maybe not needed, TODO check)
     for ion, edge_idc in in_and_into_exit_moves_pz.items():
@@ -524,6 +529,8 @@ def update_entry_and_exit_cycles(
                     if len(qubits) == 2:
                         if gate_id in graph.locked_gates:
                             break
+                        if ion in plan_active_ions:
+                            break
                         all_cycles.pop(ion)
                         break
 
@@ -534,6 +541,8 @@ def update_entry_and_exit_cycles(
     ):
         pz.rotate_entry = False
         for ion in ions_in_parking:
+            if ion in plan_active_ions:
+                continue
             all_cycles[ion] = [pz.parking_edge, pz.parking_edge]
 
     return all_cycles
@@ -615,8 +624,10 @@ def rotate(graph: Graph, ion: int, cycle_idcs: list[Edge]) -> None:
 def rotate_free_cycles(graph: Graph, all_cycles: dict[int, list[Edge]], free_cycles_idxs: list[int]) -> None:
     rotate_cycles_idcs: dict[int, list[Edge]] = {}
     for cycle_ion in free_cycles_idxs:
-        with contextlib.suppress(KeyError):
+        try:
             rotate_cycles_idcs[cycle_ion] = all_cycles[cycle_ion]
+        except KeyError:
+                print(f"[DEBUG] free cycle {cycle_ion} missing in all_cycles")
     # skip stop moves
     for ion, indiv_cycle_idcs in rotate_cycles_idcs.items():
         if len(indiv_cycle_idcs) == 2:

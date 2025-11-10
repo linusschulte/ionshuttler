@@ -129,10 +129,12 @@ def main(config: dict[str, Any]) -> None:
     graph.gate_info = initial_circuit.gate_info
     gate_partition_cfg = config.get("gate_partition")
     gate_partition_algorithm_cfg = config.get("gate_partition_algorithm")
+    enforce_slice_plan = config.get("enforce_slice_plan", True)
     graph.gate_pz_assignment = {}
     graph.current_gate_by_pz = {}
     graph.locked_gates = {}
     graph.dag_gate_id_lookup = {}
+    graph.initialize_slice_plan(None)
     gate_partition_for_run: dict[str, list[int]] | None = None
     gate_assignment: dict[int, str] = {}
     seq_length = len(graph.sequence)
@@ -227,9 +229,11 @@ def main(config: dict[str, Any]) -> None:
                     msg = (
                         f"Gate id {gate_id} assigned to multiple processing zones "
                         f"({gate_assignment[gate_id]}, {pz_name})."
-                    )
-                    raise ValueError(msg)
-                gate_assignment[gate_id] = pz_name
+                )
+                raise ValueError(msg)
+            gate_assignment[gate_id] = pz_name
+        if enforce_slice_plan:
+            graph.initialize_slice_plan(None)
     elif gate_partition_algorithm_cfg:
         if isinstance(gate_partition_algorithm_cfg, dict):
             algo_name = gate_partition_algorithm_cfg.get("name", "fgp_roee")
@@ -246,9 +250,19 @@ def main(config: dict[str, Any]) -> None:
             result = compute_gate_partition(graph, **algo_params)
             gate_partition_for_run = result.gate_partition_by_pz
             gate_assignment = result.gate_assignment
+            if enforce_slice_plan:
+                graph.initialize_slice_plan(result.slice_plan)
+            else:
+                graph.initialize_slice_plan(None)
         else:
             msg = f"Unknown gate partition algorithm '{algo_name}'."
             raise ValueError(msg)
+    else:
+        graph.initialize_slice_plan(None)
+
+    slice_plan_for_run = graph.slice_plan if enforce_slice_plan else None
+    if not enforce_slice_plan:
+        graph.initialize_slice_plan(None)
 
     graph.gate_pz_assignment = gate_assignment
     graph.current_gate_by_pz = {}
@@ -268,6 +282,7 @@ def main(config: dict[str, Any]) -> None:
         cycle_or_paths_str,
         use_dag=use_dag,
         gate_partition=gate_partition_for_run,
+        slice_plan=slice_plan_for_run,
     )
 
     # --- Results ---

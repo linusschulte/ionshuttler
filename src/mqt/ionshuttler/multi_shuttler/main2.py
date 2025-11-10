@@ -3,6 +3,9 @@ import sys
 from datetime import datetime
 from typing import Any
 import argparse, json
+import h5py
+import numpy as np
+from itertools import product
 
 
 from outside.compilation import (
@@ -18,7 +21,7 @@ from outside.processing_zone import ProcessingZone
 from outside.shuttle import main as run_shuttle_main
 
 
-def main(config: dict[str, Any]) -> None:
+def main(config: dict[str, Any]):
     # --- Extract Parameters from Config ---
     arch = config.get("arch")
     num_pzs_config = config.get("num_pzs", 1)
@@ -134,10 +137,12 @@ def main(config: dict[str, Any]) -> None:
     graph.gate_info = initial_circuit.gate_info
     gate_partition_cfg = config.get("gate_partition")
     gate_partition_algorithm_cfg = config.get("gate_partition_algorithm")
+    enforce_slice_plan = config.get("enforce_slice_plan", True)
     graph.gate_pz_assignment = {}
     graph.current_gate_by_pz = {}
     graph.locked_gates = {}
     graph.dag_gate_id_lookup = {}
+    graph.initialize_slice_plan(None)
     gate_partition_for_run: dict[str, list[int]] | None = None
     gate_assignment: dict[int, str] = {}
     if graph.sequence:
@@ -225,6 +230,7 @@ def main(config: dict[str, Any]) -> None:
         print("DAG disabled, using static QASM sequence.")
         graph.dag_gate_id_lookup = {}
 
+
     if gate_partition_cfg:
         gate_partition_for_run = {}
         for pz_name, gate_ids in gate_partition_cfg.items():
@@ -235,9 +241,11 @@ def main(config: dict[str, Any]) -> None:
                     msg = (
                         f"Gate id {gate_id} assigned to multiple processing zones "
                         f"({gate_assignment[gate_id]}, {pz_name})."
-                    )
-                    raise ValueError(msg)
-                gate_assignment[gate_id] = pz_name
+                )
+                raise ValueError(msg)
+            gate_assignment[gate_id] = pz_name
+        if enforce_slice_plan:
+            graph.initialize_slice_plan(None)
     elif gate_partition_algorithm_cfg:
         if isinstance(gate_partition_algorithm_cfg, dict):
             algo_name = gate_partition_algorithm_cfg.get("name", "fgp_roee")
@@ -249,14 +257,25 @@ def main(config: dict[str, Any]) -> None:
         if algo_name_lower == "fgp_roee":
             from outside.fgp_roee import compute_gate_partition
 
+
             if "num_clusters" not in algo_params:
                 algo_params["num_clusters"] = len(graph.pzs)
             result = compute_gate_partition(graph, **algo_params)
             gate_partition_for_run = result.gate_partition_by_pz
             gate_assignment = result.gate_assignment
+            if enforce_slice_plan:
+                graph.initialize_slice_plan(result.slice_plan)
+            else:
+                graph.initialize_slice_plan(None)
         else:
             msg = f"Unknown gate partition algorithm '{algo_name}'."
             raise ValueError(msg)
+    else:
+        graph.initialize_slice_plan(None)
+
+    slice_plan_for_run = graph.slice_plan if enforce_slice_plan else None
+    if not enforce_slice_plan:
+        graph.initialize_slice_plan(None)
 
     graph.gate_pz_assignment = gate_assignment
     graph.current_gate_by_pz = {}
@@ -281,6 +300,7 @@ def main(config: dict[str, Any]) -> None:
         cycle_or_paths_str,
         use_dag=use_dag,
         gate_partition=gate_partition_for_run,
+        slice_plan=slice_plan_for_run,
     )
 
     # --- Results ---
@@ -289,6 +309,8 @@ def main(config: dict[str, Any]) -> None:
 
     print(f"\nSimulation finished in {final_timesteps} timesteps.")
     print(f"Total CPU time: {cpu_time}")
+
+    return final_timesteps, cpu_time
 
     # # --- Benchmarking Output ---
     # bench_filename = f"benchmarks/{start_time.strftime('%Y%m%d_%H%M%S')}_{algorithm_name}.txt"
@@ -323,4 +345,86 @@ if __name__ == "__main__":
         print(f"Error: Could not parse JSON file {args.config_file}")
         sys.exit(1)
 
-    main(config)
+
+
+    # meta study overwrite:
+    grid_sizes = [3,4,5,6]
+    mz_trap_sizes = [1,2,3]
+    dag_options = [True, False]
+    partitioning_options = [None, config.get('gate_partition_algorithm')]  # None means no partitioning algorithm
+    enforce_slice_plan_options = [True, False]
+    
+    # Create HDF5 file for results
+    results_file = f"outputs/simulation_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.h5"
+    
+    with h5py.File(results_file, 'w') as f:
+        # Create datasets for results
+        results_group = f.create_group('results')
+        
+        # Store metadata
+        f.attrs['algorithm_name'] = config.get('algorithm_name', 'unknown')
+        f.attrs['num_ions'] = config.get('num_ions', 0)
+        f.attrs['seed'] = config.get('seed', 0)
+        f.attrs['created_at'] = datetime.now().isoformat()
+        
+        result_index = 0
+        valid_combinations = [
+            (grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice)
+            for grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice in product(
+                grid_sizes, mz_trap_sizes, dag_options, partitioning_options, enforce_slice_plan_options
+            )
+            if not (enforce_slice and partitioning_alg is None)
+        ]
+        total_combinations = len(valid_combinations)
+
+        print(f"Running {total_combinations} combinations...")
+
+        for grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice in valid_combinations:
+                
+            # Update config for this run
+            config["arch"] = [grid_size, grid_size, mz_trap_size, mz_trap_size]
+            config["use_dag"] = use_dag
+            config["enforce_slice_plan"] = enforce_slice
+            
+            if partitioning_alg is None:
+                config.pop("gate_partition_algorithm", None)
+            else:
+                config["gate_partition_algorithm"] = partitioning_alg
+            
+            print(f"\n=== Run {result_index + 1}/{total_combinations} ===")
+            print(f"Grid: {grid_size}x{grid_size}, MZ trap size: {mz_trap_size}")
+            print(f"DAG: {use_dag}, Partitioning: {partitioning_alg}, Enforce slice: {enforce_slice}")
+            
+            try:
+                final_timesteps, cpu_time = main(config.copy())
+                
+                # Store results in HDF5
+                run_group = results_group.create_group(f'run_{result_index:04d}')
+                run_group.attrs['grid_size'] = grid_size
+                run_group.attrs['mz_trap_size'] = mz_trap_size
+                run_group.attrs['use_dag'] = use_dag
+                run_group.attrs['partitioning_algorithm'] = partitioning_alg if partitioning_alg else 'none'
+                run_group.attrs['enforce_slice_plan'] = enforce_slice
+                run_group.attrs['final_timesteps'] = final_timesteps
+                run_group.attrs['cpu_time_seconds'] = cpu_time.total_seconds()
+                run_group.attrs['success'] = True
+                
+                print(f"Completed: {final_timesteps} timesteps, {cpu_time.total_seconds():.2f}s CPU time")
+                
+            except Exception as e:
+                print(f"Failed: {str(e)}")
+                
+                # Store failure information
+                run_group = results_group.create_group(f'run_{result_index:04d}')
+                run_group.attrs['grid_size'] = grid_size
+                run_group.attrs['mz_trap_size'] = mz_trap_size
+                run_group.attrs['use_dag'] = use_dag
+                run_group.attrs['partitioning_algorithm'] = partitioning_alg if partitioning_alg else 'none'
+                run_group.attrs['enforce_slice_plan'] = enforce_slice
+                run_group.attrs['error_message'] = str(e)
+                run_group.attrs['success'] = False
+            
+            result_index += 1
+    
+    print(f"\nAll simulations completed. Results saved to {results_file}")
+    

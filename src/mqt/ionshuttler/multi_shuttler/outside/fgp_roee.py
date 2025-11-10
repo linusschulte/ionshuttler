@@ -8,18 +8,19 @@ import math
 import os
 from pathlib import Path
 
+from .types import SlicePlan
+
 if TYPE_CHECKING:
     from .graph import Graph
     from .types import GateInfo
 
-DEBUG_ENABLED=1
+DEBUG_ENABLED = 0
 
 if DEBUG_ENABLED:
     import matplotlib.pyplot as plt
     import networkx as nx
-from collections import defaultdict
-import numpy as np
-from scipy.spatial import ConvexHull
+    import numpy as np
+    from scipy.spatial import ConvexHull
 
 DEBUG_PLOT_AVAILABLE = DEBUG_ENABLED and "plt" in globals() and "nx" in globals()
 DEBUG_PLOT_DIR = Path("runs/fgp_debug") if DEBUG_ENABLED else None
@@ -37,6 +38,8 @@ class FGPResult:
     """Direct gate id to processing-zone name mapping."""
     moves_between_slices: list[list[tuple[int, int, int]]]
     """Non-local moves required between successive slices (qubit, src, dst)."""
+    slice_plan: list[SlicePlan]
+    """Per-slice plan containing qubit and gate assignments for each processing zone."""
 
 
 def _debug(*args: object) -> None:
@@ -81,7 +84,7 @@ def compute_gate_partition(
 
     if not graph.sequence:
         gate_partition_by_pz = {pz.name: [] for pz in graph.pzs}
-        return FGPResult([], gate_partition_by_pz, {}, [])
+        return FGPResult([], gate_partition_by_pz, {}, [], [])
 
     _debug("Starting FGP partitioning")
 
@@ -97,14 +100,14 @@ def compute_gate_partition(
 
     if not two_qubit_gate_ids:
         gate_partition_by_pz = {pz.name: [] for pz in graph.pzs}
-        return FGPResult([], gate_partition_by_pz, {}, [])
+        return FGPResult([], gate_partition_by_pz, {}, [], [])
 
     num_qubits = _infer_num_qubits(gate_info)
     capacity = max(capacity or math.ceil(num_qubits / num_clusters), 1)
     _debug(f"num_qubits={num_qubits}, num_clusters={num_clusters}, capacity={capacity}")
 
     # Phase 1: Group gates into time slices respecting original order
-    time_slices = _build_time_slices(all_gate_ids, gate_info, len(graph.state))
+    time_slices = _build_time_slices(all_gate_ids, gate_info, num_qubits=len(graph.state))
     time_slices = _aggregate_time_slices(time_slices, aggregate_slices)
     _debug(f"Built {len(time_slices)} time slices:")
     for i, slice_gates in enumerate(time_slices):
@@ -112,7 +115,7 @@ def compute_gate_partition(
         _debug(f"  Slice {i}: {gate_details}")
     if not time_slices:
         gate_partition_by_pz = {pz.name: [] for pz in graph.pzs}
-        return FGPResult([], gate_partition_by_pz, {}, [])
+        return FGPResult([], gate_partition_by_pz, {}, [], [])
 
     # Phase 2: Create initial partition based on total qubit interaction frequency
     total_weights = _build_total_interaction_graph(two_qubit_gate_ids, gate_info)
@@ -162,16 +165,28 @@ def compute_gate_partition(
 
     gate_partition_by_pz = {pz_name: [] for pz_name in pz_names}
     gate_assignment: dict[int, str] = {}
+    slice_plans: list[SlicePlan] = []
 
     for slice_assignment, slice_gate_ids in zip(assignments, time_slices):
+        qubits_by_pz: dict[str, list[int]] = {pz_name: [] for pz_name in pz_names}
+        for qubit, cluster_idx in enumerate(slice_assignment):
+            if cluster_idx < len(pz_names):
+                qubits_by_pz[pz_names[cluster_idx]].append(qubit)
+
+        gates_by_pz: dict[str, list[int]] = {pz_name: [] for pz_name in pz_names}
         for gate_id in slice_gate_ids:
             qubits = gate_info[gate_id].qubits
-            cluster = slice_assignment[qubits[0]]  # All qubits in same gate must be in same cluster
-            pz_name = pz_names[cluster]
+            if not qubits:
+                continue
+            cluster_idx = slice_assignment[qubits[0]]
+            pz_name = pz_names[cluster_idx]
+            gates_by_pz[pz_name].append(gate_id)
             gate_partition_by_pz[pz_name].append(gate_id)
             gate_assignment[gate_id] = pz_name
 
-    return FGPResult(assignments, gate_partition_by_pz, gate_assignment, moves)
+        slice_plans.append(SlicePlan(qubits_by_pz=qubits_by_pz, gates_by_pz=gates_by_pz))
+
+    return FGPResult(assignments, gate_partition_by_pz, gate_assignment, moves, slice_plans)
 
 
 # ---------------------------------------------------------------------------
