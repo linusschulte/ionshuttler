@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from qiskit.dagcircuit import DAGDependency
 
     from .graph import Graph
+    from .processing_zone import ProcessingZone
     from .types import Edge, SlicePlan
 
 
@@ -106,6 +107,66 @@ def _find_next_plan_gate(graph: Graph, plan_slice: SlicePlan, pz_name: str) -> i
         if gate_id in graph.sequence:
             return gate_id
     return None
+
+
+def _gate_ready_in_pz(graph: "Graph", pz: "ProcessingZone", gate_id: int) -> bool:
+    gate_qubits = graph.gate_qubits(gate_id)
+    if not gate_qubits:
+        return False
+    parking_idx = get_idx_from_idc(graph.idc_dict, pz.parking_edge)
+    return all(get_idx_from_idc(graph.idc_dict, graph.state[ion]) == parking_idx for ion in gate_qubits)
+
+
+def _collect_ready_plan_gates(graph: "Graph", plan_slice: SlicePlan) -> dict[str, dict[str, list[int] | int | None]]:
+    ready: dict[str, dict[str, list[int] | int | None]] = {}
+    for pz in graph.pzs:
+        ready_entry: dict[str, list[int] | int | None] = {"two_q": None, "one_q": []}
+        for gate_id in plan_slice.gates_by_pz.get(pz.name, []):
+            if gate_id not in graph.sequence:
+                continue
+            if not _gate_ready_in_pz(graph, pz, gate_id):
+                continue
+            qubits = graph.gate_qubits(gate_id)
+            if len(qubits) == 1:
+                ready_entry["one_q"].append(gate_id)
+            elif len(qubits) >= 2 and ready_entry["two_q"] is None:
+                ready_entry["two_q"] = gate_id
+        ready[pz.name] = ready_entry
+    return ready
+
+
+def _process_ready_plan_gates(graph: "Graph", plan_slice: SlicePlan) -> list[int]:
+    ready_map = _collect_ready_plan_gates(graph, plan_slice)
+    processed: list[int] = []
+    for pz in graph.pzs:
+        ready_entry = ready_map.get(pz.name, {"two_q": None, "one_q": []})
+        active_gate = getattr(pz, "_plan_active_gate_id", None)
+        if active_gate is not None and active_gate not in graph.sequence:
+            active_gate = None
+            pz._plan_active_gate_id = None
+            pz.time_in_pz_counter = 0
+
+        candidate_gate = active_gate
+        if candidate_gate is None and ready_entry["two_q"] is not None:
+            candidate_gate = ready_entry["two_q"]
+            setattr(pz, "_plan_active_gate_id", candidate_gate)
+            pz.time_in_pz_counter = 0
+
+        if candidate_gate is not None:
+            if _gate_ready_in_pz(graph, pz, candidate_gate):
+                pz.time_in_pz_counter += 1
+                if pz.time_in_pz_counter >= 3:
+                    processed.append(candidate_gate)
+                    if candidate_gate in graph.locked_gates and graph.locked_gates[candidate_gate] == pz.name:
+                        graph.locked_gates.pop(candidate_gate)
+                    pz.time_in_pz_counter = 0
+                    setattr(pz, "_plan_active_gate_id", None)
+            # entangling operations block local pulses
+            continue
+
+        for gate_id in ready_entry.get("one_q", []):
+            processed.append(gate_id)
+    return processed
 
 
 def _build_priority_queue_from_plan(
@@ -363,25 +424,32 @@ def main(
             for pz_name, gate_id in next_gate_at_pz_dict.items()
         }
 
+        graph.in_process = []
+        if plan_active and current_plan is not None:
+            ready_snapshot = _collect_ready_plan_gates(graph, current_plan)
+            for ready_entry in ready_snapshot.values():
+                gate_id = ready_entry.get("two_q")
+                if gate_id is None:
+                    continue
+                graph.in_process.extend(graph.gate_qubits(gate_id))
+        else:
+            # -> important for 2-qubit gates
+            # -> leave ion in processing zone if needed in a 2-qubit gate
+            for i in range(min(len(graph.pzs), len(graph.sequence))):
+                gate_id = graph.sequence[i]
+                qubits = graph.gate_qubits(gate_id)
 
-        
-        # -> important for 2-qubit gates
-        # -> leave ion in processing zone if needed in a 2-qubit gate
-        for i in range(min(len(graph.pzs), len(graph.sequence))):
-            gate_id = graph.sequence[i]
-            qubits = graph.gate_qubits(gate_id)
-
-            if len(qubits) == 2:
-                ion1, ion2 = qubits
-                for pz in graph.pzs:
-                    state1 = graph.state[ion1]
-                    state2 = graph.state[ion2]
-                    next_qubits = next_gate_qubits_by_pz.get(pz.name, ())
-                    # append ion to in_process if it is in the correct processing zone
-                    if state1 == pz.parking_edge and ion1 in next_qubits and ion2 in next_qubits:
-                        graph.in_process.append(ion1)
-                    if state2 == pz.parking_edge and ion1 in next_qubits and ion2 in next_qubits:
-                        graph.in_process.append(ion2)
+                if len(qubits) == 2:
+                    ion1, ion2 = qubits
+                    for pz in graph.pzs:
+                        state1 = graph.state[ion1]
+                        state2 = graph.state[ion2]
+                        next_qubits = next_gate_qubits_by_pz.get(pz.name, ())
+                        # append ion to in_process if it is in the correct processing zone
+                        if state1 == pz.parking_edge and ion1 in next_qubits and ion2 in next_qubits:
+                            graph.in_process.append(ion1)
+                        if state2 == pz.parking_edge and ion1 in next_qubits and ion2 in next_qubits:
+                            graph.in_process.append(ion2)
 
         title_text, xlabel_text = build_plot_annotations(graph, graph.in_process, gates_processed)
 
@@ -404,7 +472,10 @@ def main(
         # Check the state of each ion in the sequence
         graph.state = get_ions(graph)
 
-        if use_dag_now:
+        processed_gate_ids: list[int] = []
+        if plan_active and current_plan is not None:
+            processed_gate_ids = _process_ready_plan_gates(graph, current_plan)
+        elif use_dag_now:
             processed_nodes = {}
             gate_id_lookup = getattr(graph, "dag_gate_id_lookup", {})
             for pz_name, gate_node in next_processable_gate_nodes.items():
@@ -419,9 +490,7 @@ def main(
                     if get_idx_from_idc(graph.idc_dict, graph.state[ion]) == get_idx_from_idc(
                         graph.idc_dict, pz.parking_edge
                     ):
-                        pz.gate_execution_finished = (
-                            False  # set False, then check below if gate time is finished -> then True
-                        )
+                        pz.gate_execution_finished = False
                         pz.getting_processed.append(gate_node)
                         pz.time_in_pz_counter += 1
                         gate_time = 1
@@ -429,83 +498,55 @@ def main(
                         if pz.time_in_pz_counter == gate_time:
                             processed_nodes[pz_name] = gate_node
                             pz.getting_processed.remove(gate_node)
-                            # remove the processing zone from the list
-                            # (it can only process one ion)
-                            # pzs.remove(pz)
-                            # graph.in_process.append(ion)
-
                             pz.time_in_pz_counter = 0
                             pz.gate_execution_finished = True
-                            # break
                 elif len(gate_qubits) == 2:
                     ion1, ion2 = gate_qubits
                     state1 = graph.state[ion1]
                     state2 = graph.state[ion2]
 
-                    # if both ions are in the processing zone, process the gate
                     if get_idx_from_idc(graph.idc_dict, state1) == get_idx_from_idc(
                         graph.idc_dict, pz.parking_edge
                     ) and get_idx_from_idc(graph.idc_dict, state2) == get_idx_from_idc(graph.idc_dict, pz.parking_edge):
-                        pz.gate_execution_finished = (
-                            False  # set False, then check below if gate time is finished -> then True
-                        )
+                        pz.gate_execution_finished = False
                         pz.getting_processed.append(gate_node)
                         pz.time_in_pz_counter += 1
 
                         gate_time = 3
                         if pz.time_in_pz_counter == gate_time:
                             processed_nodes[pz_name] = gate_node
-                            # remove the processing zone from the list
-                            # (it can only process one gate)
-                            # pzs.remove(pz)
-
-                            # remove the locked pz of the processed two-qubit gate
                             if gate_id in graph.locked_gates and graph.locked_gates[gate_id] == pz.name:
                                 graph.locked_gates.pop(gate_id)
                             pz.time_in_pz_counter = 0
                             pz.gate_execution_finished = True
                             pz.getting_processed.remove(gate_node)
-                            # break
                 else:
                     msg = "Invalid gate format"
                     raise ValueError(msg)
             gates_processed.extend([gate_id_lookup.get(gate_node.node_id) for gate_node in processed_nodes.values()])
 
         else:
-            processed_gate_ids: list[int] = []
             previous_gate_processed = True
             pzs = graph.pzs.copy()
             next_gate_ids = graph.sequence[: min(len(graph.pzs), len(graph.sequence))]
-            # go through the first gates in the sequence (as many as pzs or sequence length)
-            # for now, gates are processed in order
-            # (can only be processed in parallel if previous gates are processed)
             for gate_id in next_gate_ids:
-                # only continue if previous ion was processed
                 if not previous_gate_processed:
                     break
                 gate_qubits = graph.gate_qubits(gate_id)
                 gate_processed = False
-                # wenn auf weg zu pz in anderer pz -> wird processed?
-                # Problem nur für 2-qubit gate?
                 for pz in pzs:
                     if len(gate_qubits) == 1:
                         ion = gate_qubits[0]
                         if get_idx_from_idc(graph.idc_dict, graph.state[ion]) == get_idx_from_idc(
                             graph.idc_dict, pz.parking_edge
                         ):
-                            pz.gate_execution_finished = (
-                                False  # set False, then check below if gate time is finished -> then True
-                            )
+                            pz.gate_execution_finished = False
                             pz.time_in_pz_counter += 1
                             gate_time = 1
                             if pz.time_in_pz_counter == gate_time:
                                 processed_gate_ids.insert(0, gate_id)
                                 gate_processed = True
-                                # remove the processing zone from the list
-                                # (it can only process one ion)
                                 pzs.remove(pz)
-                                # graph.in_process.append(ion)
-
                                 pz.time_in_pz_counter = 0
                                 pz.gate_execution_finished = True
                                 break
@@ -514,25 +555,18 @@ def main(
                         state1 = graph.state[ion1]
                         state2 = graph.state[ion2]
 
-                        # if both ions are in the processing zone, process the gate
                         if get_idx_from_idc(graph.idc_dict, state1) == get_idx_from_idc(
                             graph.idc_dict, pz.parking_edge
                         ) and get_idx_from_idc(graph.idc_dict, state2) == get_idx_from_idc(
                             graph.idc_dict, pz.parking_edge
                         ):
-                            pz.gate_execution_finished = (
-                                False  # set False, then check below if gate time is finished -> then True
-                            )
+                            pz.gate_execution_finished = False
                             pz.time_in_pz_counter += 1
                             gate_time = 3
                             if pz.time_in_pz_counter == gate_time:
                                 processed_gate_ids.insert(0, gate_id)
                                 gate_processed = True
-                                # remove the processing zone from the list
-                                # (it can only process one gate)
                                 pzs.remove(pz)  # noqa: B909
-
-                                # remove the locked pz of the processed two-qubit gate
                                 if gate_id in graph.locked_gates and graph.locked_gates[gate_id] == pz.name:
                                     graph.locked_gates.pop(gate_id)
                                 pz.time_in_pz_counter = 0
@@ -542,10 +576,15 @@ def main(
                         msg = "Invalid gate format"
                         raise ValueError(msg)
                 previous_gate_processed = gate_processed
-            gates_processed.extend(processed_gate_ids)
+        gates_processed.extend(processed_gate_ids)
 
         # Remove processed ions from the sequence (and dag if use_dag)
-        if use_dag_now:
+        if plan_active and current_plan is not None:
+            for gate_id in processed_gate_ids:
+                if gate_id in graph.sequence:
+                    graph.sequence.remove(gate_id)
+            _update_slice_progress(graph, processed_gate_ids)
+        elif use_dag_now:
             if processed_nodes:
                 completed_gate_ids = [
                     gate_id_lookup.get(node.node_id)

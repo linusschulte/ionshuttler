@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from .graph import Graph
     from .types import GateInfo
 
-DEBUG_ENABLED = 0
+DEBUG_ENABLED = 1
 
 if DEBUG_ENABLED:
     import matplotlib.pyplot as plt
