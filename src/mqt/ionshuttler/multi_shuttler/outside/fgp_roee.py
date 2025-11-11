@@ -435,35 +435,33 @@ def _roee_partition(
         
         # For each violating edge, try to fix via move or swap
         for u, v in violating_edges:
-            best_operation: tuple[str, tuple[int, ...], float] | None = None
+            candidate_operations: list[tuple[str, tuple[int, ...], float]] = []
 
             # Option 1: Move u to v's cluster (if capacity allows)
             target_cluster = assignment[v]
             if len(clusters[target_cluster]) < capacity:
                 delta = _move_delta(u, target_cluster, assignment, neighbor_map)
-                best_operation = ("move", (u, target_cluster), delta)
+                candidate_operations.append(("move", (u, target_cluster), delta))
 
             # Option 2: Move v to u's cluster (if capacity allows)
             target_cluster_alt = assignment[u]
             if len(clusters[target_cluster_alt]) < capacity:
                 delta = _move_delta(v, target_cluster_alt, assignment, neighbor_map)
-                if best_operation is None or delta < best_operation[2]:
-                    best_operation = ("move", (v, target_cluster_alt), delta)
+                candidate_operations.append(("move", (v, target_cluster_alt), delta))
 
             # Option 3: Swap u with someone in v's cluster (if moves not possible)
-            if best_operation is None:
-                swap_candidate = _best_swap_candidate(
-                    u,
-                    v,
-                    assignment,
-                    clusters,
-                    capacity,
-                    neighbor_map,
-                )
-                if swap_candidate is not None:
-                    best_operation = swap_candidate
+            swap_candidate = _best_swap_candidate(
+                u,
+                v,
+                assignment,
+                clusters,
+                capacity,
+                neighbor_map,
+            )
+            if swap_candidate is not None:
+                candidate_operations.append(swap_candidate)
 
-            if best_operation is None:
+            if not candidate_operations:
                 _debug(
                     "Failed to find move/swap for edge",
                     (u, v),
@@ -479,6 +477,25 @@ def _roee_partition(
                 raise ValueError(msg)
 
             # Apply the best operation found
+            best_operation = None
+            best_score: tuple[int, float] | None = None
+            for op_type, data, delta in candidate_operations:
+                violations_after = _count_violations_with_operation(
+                    assignment,
+                    required_edges,
+                    op_type,
+                    data,
+                )
+                score = (violations_after, delta)
+                if best_operation is None or best_score is None or score < best_score:
+                    best_operation = (op_type, data, delta)
+                    best_score = score
+                if violations_after == 0:
+                    break
+
+            if best_operation is None:
+                continue
+
             op_type, data, _ = best_operation
             _debug("Applying operation:", op_type, data)
             if op_type == "move":
@@ -536,13 +553,13 @@ def _best_swap_candidate(
     capacity: int,
     neighbor_map: list[list[tuple[int, float]]],
 ) -> tuple[str, tuple[int, int], float] | None:
-    """Find the best qubit in v's cluster to swap with u, or suggest a move if space allows."""
+    """Find the best swap involving qubits from each cluster, or suggest a move if space allows."""
     target_cluster = assignment[v]
     current_cluster = assignment[u]
     if current_cluster == target_cluster:
         return None
 
-    # Try swapping u with each qubit in v's cluster
+    # Try swapping u with each qubit in v's cluster and v with each qubit in u's cluster
     best_swap: tuple[int, int, float] | None = None
     for candidate in clusters[target_cluster]:
         if candidate == v:
@@ -550,6 +567,13 @@ def _best_swap_candidate(
         delta = _swap_delta(u, candidate, assignment, neighbor_map)
         if best_swap is None or delta < best_swap[2]:
             best_swap = (u, candidate, delta)
+
+    for candidate in clusters[current_cluster]:
+        if candidate == u:
+            continue
+        delta = _swap_delta(candidate, v, assignment, neighbor_map)
+        if best_swap is None or delta < best_swap[2]:
+            best_swap = (candidate, v, delta)
 
     # Fallback to move if cluster has capacity and no good swap found
     if best_swap is None and len(clusters[target_cluster]) < capacity:
@@ -635,6 +659,37 @@ def _apply_swap(
     assignment[qubit_b] = cluster_a
 
 
+def _count_violations(
+    assignment: list[int],
+    required_edges: set[tuple[int, int]],
+) -> int:
+    """Count how many required edges span different clusters."""
+    return sum(1 for u, v in required_edges if assignment[u] != assignment[v])
+
+
+def _count_violations_with_operation(
+    assignment: list[int],
+    required_edges: set[tuple[int, int]],
+    op_type: str,
+    data: tuple[int, ...],
+) -> int:
+    """Estimate violation count after applying an operation without mutating state."""
+    temp_assignment = assignment.copy()
+    if op_type == "move":
+        qubit, target = data
+        temp_assignment[qubit] = target
+    elif op_type == "swap":
+        qubit_a, qubit_b = data
+        temp_assignment[qubit_a], temp_assignment[qubit_b] = (
+            temp_assignment[qubit_b],
+            temp_assignment[qubit_a],
+        )
+    else:
+        msg = f"Unknown operation type '{op_type}' in violation estimator."
+        raise ValueError(msg)
+    return _count_violations(temp_assignment, required_edges)
+
+
 def _compute_moves(assignments: list[list[int]]) -> list[list[tuple[int, int, int]]]:
     """Identify qubits that change clusters between consecutive time slices."""
     moves: list[list[tuple[int, int, int]]] = []
@@ -684,11 +739,14 @@ def _plot_slice_graph(
     partitions = defaultdict(list)
     for qubit, partition in enumerate(assignment):
         partitions[partition].append(qubit)
-    
+
+    # Sort partitions to keep color/legend ordering consistent across slices
+    sorted_partitions = sorted(partitions.items(), key=lambda item: item[0])
+
     # Define distinct colors for partitions
-    partition_colors = plt.cm.Set3(np.linspace(0, 1, len(partitions)))
+    partition_colors = plt.cm.Set3(np.linspace(0, 1, len(sorted_partitions)))
     
-    for partition_idx, (partition, qubits) in enumerate(partitions.items()):
+    for partition_idx, (partition, qubits) in enumerate(sorted_partitions):
         if len(qubits) <= 1:
             continue
         
@@ -739,7 +797,7 @@ def _plot_slice_graph(
     
     # Add legend for partitions
     legend_elements = []
-    for partition_idx, (partition, qubits) in enumerate(partitions.items()):
+    for partition_idx, (partition, qubits) in enumerate(sorted_partitions):
         legend_elements.append(patches.Patch(
             color=partition_colors[partition_idx], 
             alpha=0.5,

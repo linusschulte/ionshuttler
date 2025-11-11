@@ -609,4 +609,6 @@ def main(
 
         timestep += 1
 
+    print(f"\rTimestep: {timestep}/{int(max_timesteps)}", end="", flush=True)
+
     return timestep
