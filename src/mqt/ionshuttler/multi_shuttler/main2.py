@@ -333,6 +333,8 @@ def main(config: dict[str, Any]):
 
             if "num_clusters" not in algo_params:
                 algo_params["num_clusters"] = config.get("num_pzs", 1)
+            if "capacity" not in algo_params:
+                algo_params["capacity"] = config.get("max_ions_per_pz", 1)
             print(algo_params)
             result = compute_gate_partition(graph, **algo_params)
             gate_partition_for_run = result.gate_partition_by_pz
