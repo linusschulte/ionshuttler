@@ -21,6 +21,7 @@ if DEBUG_ENABLED:
     import networkx as nx
     import numpy as np
     from scipy.spatial import ConvexHull
+    import matplotlib.patches as patches
 
 DEBUG_PLOT_AVAILABLE = DEBUG_ENABLED and "plt" in globals() and "nx" in globals()
 DEBUG_PLOT_DIR = Path("runs/fgp_debug") if DEBUG_ENABLED else None
@@ -732,9 +733,7 @@ def _plot_slice_graph(
     edge_labels = {edge: f"{graph[edge[0]][edge[1]]['weight']:.2f}" for edge in graph.edges()}
     
     plt.figure(figsize=(8, 6))
-    
-    # Draw partition shapes first (behind everything)
-    import matplotlib.patches as patches
+
     
     partitions = defaultdict(list)
     for qubit, partition in enumerate(assignment):

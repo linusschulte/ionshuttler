@@ -225,7 +225,7 @@ def main(config: dict[str, Any]):
     seq_length = len(graph.sequence)
     print(f"Number of Gates: {seq_length}")
 
-    # --- Partitioning ---
+    # --- Partitioning (legacy) ---
     partitioning = True  # Make configurable
     partitions: dict[str, list[int]] = {}
     if partitioning:
