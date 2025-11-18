@@ -34,7 +34,13 @@ class ContractionResult:
     unary_weights: dict[int, float]
     assignment: list[int] | None
     cluster_loads: list[int] | None
-    plot_dir: Path | None
+
+
+@dataclass(slots=True)
+class Partition:
+    processing_zone: set[int]
+    memory_zone: set[int]
+    tbd: set[int]
 
 
 class _UnionFind:
@@ -431,7 +437,6 @@ def plot_partition_outputs(
     }
 
     required_qubits = single_qubit_nodes | two_qubit_nodes
-    print("required qubits:", required_qubits)
 
     prefix = f"slice_{slice_gate_ids[0]}_{slice_gate_ids[-1]}"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -474,6 +479,151 @@ def plot_partition_outputs(
             assignment=result.assignment
         )
 
+
+def peel_slice(
+    result: ContractionResult,
+    gate_info: dict[int, GateInfo],
+    slice_gate_ids: Sequence[int],
+    capacities: Sequence[int],
+) -> list[dict[str, object]]:
+    """Peel an overfull slice into capacity-respecting subslices.
+
+    Returns a list of subslices, each containing a snapshot of partition buckets and
+    the gates that can be performed in that subslice.
+    """
+    if result.assignment is None:
+        raise ValueError("Cannot peel without an initial assignment.")
+    num_pzs = len(capacities)
+    partitions: list[Partition] = [
+        Partition(processing_zone=set(), memory_zone=set(), tbd=set()) for _ in range(num_pzs)
+    ]
+
+    required_qubits = {q for gid in slice_gate_ids for q in gate_info[gid].qubits}
+    # Initialize TBD/memory from assignment
+    for sn in result.supernodes:
+        cluster = result.assignment[sn.id]
+        if cluster < 0 or cluster >= num_pzs:
+            raise ValueError(f"Supernode {sn.id} assigned to invalid cluster {cluster}")
+            continue
+        for q in sn.qubits:
+            if q in required_qubits:
+                partitions[cluster].tbd.add(q)
+            else:
+                partitions[cluster].memory_zone.add(q)
+
+    # Weight components per supernode
+    supernode_unary: dict[int, float] = {
+        sn.id: sum(result.unary_weights.get(q, 0.0) for q in sn.qubits) for sn in result.supernodes
+    }
+    supernode_internal: dict[int, float] = {}
+    for sn in result.supernodes:
+        internal_edge_sum = 0.0
+        for (u, v), weight in result.soft_edges.items():
+            if result.qubit_to_supernode.get(u) == sn.id and result.qubit_to_supernode.get(v) == sn.id:
+                internal_edge_sum += weight
+        supernode_internal[sn.id] = internal_edge_sum
+
+    required_gates: set[int] = set(slice_gate_ids)
+    subslices: list[dict[str, object]] = []
+
+    while required_gates:
+        progress = False
+        
+
+        # Select qubits into processing_zone up to capacity, lowest weight first
+        for pz_idx, partition in enumerate(partitions):
+            if capacities[pz_idx] <= 0:
+                continue
+            candidates: dict[int, set[int]] = defaultdict(set)
+            for q in partition.tbd:
+                sn_id = result.qubit_to_supernode[q]
+                candidates[sn_id].add(q)
+            # Score supernodes: unary + internal + connections to already selected qubits in this PZ
+            pz_selected = set(partition.processing_zone)
+            edge_map = result.soft_edges
+
+            def peel_score(sn_id: int) -> float:
+                unary = supernode_unary.get(sn_id, 0.0)
+                internal = supernode_internal.get(sn_id, 0.0)
+                external = 0.0
+                for q in candidates[sn_id]:
+                    for sel in pz_selected:
+                        external += edge_map.get(tuple(sorted((q, sel))), 0.0)
+                return unary + internal + external
+
+            ordered = sorted(candidates.items(), key=lambda kv: peel_score(kv[0]))
+            remaining_cap = max(capacities[pz_idx] - len(partition.processing_zone), 0)
+
+            for sn_id, qs in ordered:
+                if remaining_cap < len(qs): # Only add a supernode if it fits entirely!
+                    break
+                take = min(len(qs), remaining_cap)
+                selected = set(list(qs)[:take])
+                partition.processing_zone.update(selected)
+                partition.tbd.difference_update(selected)
+                remaining_cap -= take
+                progress = progress or bool(selected)
+
+            #print(f">{pz_idx}>> required gates:", required_gates)
+            #print(f">{pz_idx}>> progress?", progress)
+            #print(f">{pz_idx}>> partition state:", partition)
+
+        performed: set[int] = set()
+        for gate_id in list(required_gates):
+            qubits = gate_info[gate_id].qubits
+            hosting_pz = None
+            for pz_idx, partition in enumerate(partitions):
+                if qubits[0] in partition.processing_zone:
+                    hosting_pz = pz_idx
+                    break
+            if hosting_pz is None:
+                continue
+            if all(q in partitions[hosting_pz].processing_zone for q in qubits):
+                performed.add(gate_id)
+
+        
+
+        subslices.append(
+            {
+                "partitions": [
+                    {
+                        "processing_zone": sorted(p.processing_zone),
+                        "memory_zone": sorted(p.memory_zone),
+                        "tbd": sorted(p.tbd),
+                    }
+                    for p in partitions
+                ],
+                "gates": sorted(performed),
+            }
+        )
+
+        required_gates.difference_update(performed)
+        for p in partitions:
+            p.memory_zone.update(p.processing_zone)
+            p.processing_zone.clear()
+
+        if not progress and not performed and required_gates:
+            raise RuntimeError("Peeling stalled: no progress but required gates remain.")
+        
+
+    if len(subslices) > 1:
+        print(f"\n>>> DEBUG: Slice {slice_gate_ids[0]}-{slice_gate_ids[-1]} produced {len(subslices)} subslices")
+        print(f">>> num_pzs={num_pzs}, capacities={capacities}")
+        print(f">>> Initial assignment: {result.assignment}")
+        print(f">>> Cluster loads: {result.cluster_loads}")
+        print(f">>> Supernodes:")
+        for sn in result.supernodes:
+            print(f"    S{sn.id}: qubits={sn.qubits}, cluster={result.assignment[sn.id] if result.assignment else None}")
+        print(f">>> Required qubits: {required_qubits}")
+        print(f">>> Subslices breakdown:")
+        for i, subslice in enumerate(subslices):
+            print(f"  Subslice {i}:")
+            for pz_idx, p in enumerate(subslice["partitions"]):
+                print(f"    PZ{pz_idx}: processing={p['processing_zone']}, memory={p['memory_zone']}, tbd={p['tbd']}")
+            print(f"    Gates performed: {subslice['gates']}")
+
+    return subslices
+
 def partition(
     gate_info: dict[int, GateInfo],
     slice_gate_ids: Sequence[int],
@@ -505,11 +655,6 @@ def partition(
     } | {
         q for gate_id in lookahead_gate_ids for q in gate_info[gate_id].qubits
     })
-    single_qubit_nodes = {
-        gate_info[gate_id].qubits[0]
-        for gate_id in slice_gate_ids
-        if len(gate_info[gate_id].qubits) == 1
-    }
 
     supernodes, qubit_to_supernode = _contract_supernodes(qubits, hard_edges)
     aggregated_soft_edges = _aggregate_soft_edges(soft_edges, qubit_to_supernode)
@@ -532,7 +677,6 @@ def partition(
         unary_weights=unary_weights,
         assignment=assignment,
         cluster_loads=cluster_loads,
-        plot_dir=None,
     )
 
 
@@ -598,6 +742,12 @@ def main() -> None:
         help="Number of processing zones to seed an assignment (optional).",
     )
     parser.add_argument(
+        "--capacity",
+        type=int,
+        default=None,
+        help="Uniform capacity per processing zone for peeling (optional).",
+    )
+    parser.add_argument(
         "--balance-penalty",
         type=float,
         default=1.0,
@@ -632,9 +782,13 @@ def main() -> None:
             num_pzs=args.num_pzs,
             balance_penalty=args.balance_penalty,
         )
-        _print_summary(result)
+        #_print_summary(result)
         if not args.no_plot:
             plot_partition_outputs(num_qubits, result, gate_info, current_slice, future_slice_window, args.output_dir)
+        if args.capacity and args.num_pzs:
+            capacities = [args.capacity] * args.num_pzs
+            subslices = peel_slice(result, gate_info, current_slice, capacities)
+
 
 
 if __name__ == "__main__":
