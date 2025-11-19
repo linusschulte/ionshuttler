@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 import math
 from pathlib import Path
+from statistics import variance
 from typing import Iterable, Sequence
 import numpy as np
 from scipy.spatial import ConvexHull
@@ -15,7 +16,7 @@ from .types import GateInfo
 
 @dataclass(slots=True)
 class Supernode:
-    """Collapsed component that groups qubits connected via hard edges."""
+    """Collapsed component that groups qubits that share a multi-qubit gate."""
 
     id: int
     qubits: tuple[int, ...]
@@ -28,10 +29,10 @@ class ContractionResult:
 
     supernodes: list[Supernode]
     qubit_to_supernode: dict[int, int]
-    hard_edges: dict[tuple[int, int], float]
-    hard_unary: set[int]
-    soft_edges: dict[tuple[int, int], float]
-    unary_weights: dict[int, float]
+    required_edges: dict[tuple[int, int], float]
+    required_unary: set[int]
+    lookahead_edges: dict[tuple[int, int], float]
+    lookahead_unary: dict[int, float]
     assignment: list[int] | None
     cluster_loads: list[int] | None
 
@@ -137,10 +138,10 @@ def _build_unary_weights(
 
 def _contract_supernodes(
     qubits: Sequence[int],
-    hard_edges: dict[tuple[int, int], float],
+    required_edges: dict[tuple[int, int], float],
 ) -> tuple[list[Supernode], dict[int, int]]:
     uf = _UnionFind(qubits)
-    for u, v in hard_edges:
+    for u, v in required_edges:
         uf.union(u, v)
 
     components: dict[int, list[int]] = {}
@@ -158,12 +159,12 @@ def _contract_supernodes(
     return supernodes, qubit_to_supernode
 
 
-def _aggregate_soft_edges(
-    soft_edges: dict[tuple[int, int], float],
+def _aggregate_lookahead_edges(
+    lookahead_edges: dict[tuple[int, int], float],
     qubit_to_supernode: dict[int, int],
 ) -> dict[tuple[int, int], float]:
     aggregated: dict[tuple[int, int], float] = {}
-    for (u, v), weight in soft_edges.items():
+    for (u, v), weight in lookahead_edges.items():
         if u not in qubit_to_supernode or v not in qubit_to_supernode:
             continue
         super_u = qubit_to_supernode[u]
@@ -177,7 +178,7 @@ def _aggregate_soft_edges(
 
 def _greedy_initial_partition(
     supernodes: list[Supernode],
-    soft_edges: dict[tuple[int, int], float],
+    lookahead_edges: dict[tuple[int, int], float],
     unary_weights: dict[int, float],
     num_pzs: int,
     *,
@@ -190,7 +191,7 @@ def _greedy_initial_partition(
 
     # Precompute adjacency by supernode id
     adjacency: dict[int, list[tuple[int, float]]] = defaultdict(list)
-    for (u, v), weight in soft_edges.items():
+    for (u, v), weight in lookahead_edges.items():
         adjacency[u].append((v, weight))
         adjacency[v].append((u, weight))
 
@@ -224,8 +225,8 @@ def _greedy_initial_partition(
 
 def _plot_interaction_graph(
     nodes: Sequence[int] | Sequence[Supernode],
-    hard_edges: dict[tuple[int, int], float],
-    soft_edges: dict[tuple[int, int], float],
+    required_edges: dict[tuple[int, int], float],
+    lookahead_edges: dict[tuple[int, int], float],
     out_path: Path,
     *,
     node_label: str,
@@ -266,16 +267,16 @@ def _plot_interaction_graph(
                 highlighted=node in highlighted_nodes,
             )
 
-    for (u, v), weight in soft_edges.items():
+    for (u, v), weight in lookahead_edges.items():
         if weight <= 0:
             continue
-        G.add_edge(u, v, weight=weight, edge_type="soft")
-    for (u, v), weight in hard_edges.items():
+        G.add_edge(u, v, weight=weight, edge_type="lookahead")
+    for (u, v), weight in required_edges.items():
         if G.has_edge(u, v):
             G[u][v]["weight"] += weight
-            G[u][v]["edge_type"] = "hard"
+            G[u][v]["edge_type"] = "required"
         else:
-            G.add_edge(u, v, weight=weight, edge_type="hard")
+            G.add_edge(u, v, weight=weight, edge_type="required")
 
     pos = nx.circular_layout(G)
     plt.figure(figsize=(8, 6))
@@ -382,13 +383,13 @@ def _plot_interaction_graph(
         )
     nx.draw_networkx_labels(G, pos, labels=labels, font_size=9)
 
-    hard_edges_list = [(u, v) for (u, v, d) in G.edges(data=True) if d.get("edge_type") == "hard"]
-    soft_edges_list = [(u, v) for (u, v, d) in G.edges(data=True) if d.get("edge_type") == "soft"]
+    required_edges_list = [(u, v) for (u, v, d) in G.edges(data=True) if d.get("edge_type") == "required"]
+    lookahead_edges_list = [(u, v) for (u, v, d) in G.edges(data=True) if d.get("edge_type") == "lookahead"]
 
     nx.draw_networkx_edges(
         G,
         pos,
-        edgelist=soft_edges_list,
+        edgelist=lookahead_edges_list,
         edge_color="#7f7f7f",
         style="dashed",
         alpha=0.7,
@@ -397,7 +398,7 @@ def _plot_interaction_graph(
     nx.draw_networkx_edges(
         G,
         pos,
-        edgelist=hard_edges_list,
+        edgelist=required_edges_list,
         edge_color="#d62728",
         width=2.0,
     )
@@ -422,46 +423,47 @@ def plot_partition_outputs(
     output_dir: Path,
 ) -> None:
     
-    """Write before/after/assignment plots for a single slice."""
+    """Write before/after/partition plots for a single slice."""
     qubits = range(num_qubits)
-    single_qubit_nodes = {
+    required_unary_qubits = {
         gate_info[gid].qubits[0]
         for gid in slice_gate_ids
         if len(gate_info[gid].qubits) == 1
     }
-    two_qubit_nodes = {
+    required_edge_qubits = {
         qubit 
         for gid in slice_gate_ids 
         if len(gate_info[gid].qubits) == 2
         for qubit in gate_info[gid].qubits
     }
 
-    required_qubits = single_qubit_nodes | two_qubit_nodes
+    required_qubits = required_unary_qubits | required_edge_qubits
 
     prefix = f"slice_{slice_gate_ids[0]}_{slice_gate_ids[-1]}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     before_path = output_dir / f"{prefix}_before.png"
+    print("REQUIRED EDGES:", result.required_edges)
     _plot_interaction_graph(
         qubits,
-        result.hard_edges,
-        _build_decayed_edge_weights(future_slices, gate_info, 1.0),
+        result.required_edges,
+        result.lookahead_edges,
         before_path,
         node_label="q",
-        highlighted_nodes=single_qubit_nodes,
-        node_weights=result.unary_weights,
+        highlighted_nodes=required_unary_qubits,
+        node_weights=result.lookahead_unary,
     )
     after_path = output_dir / f"{prefix}_contracted.png"
     supernode_weights = {
-        sn.id: sum(result.unary_weights.get(q, 0.0) for q in sn.qubits) for sn in result.supernodes
+        sn.id: sum(result.lookahead_unary.get(q, 0.0) for q in sn.qubits) for sn in result.supernodes
     }
     _plot_interaction_graph(
         result.supernodes,
         {},
-        result.soft_edges,
+        result.lookahead_edges,
         after_path,
         node_label="S",
-        highlighted_nodes={result.qubit_to_supernode[q] for q in required_qubits},
+        highlighted_nodes=required_qubits,
         node_weights=supernode_weights,
     )
 
@@ -471,10 +473,10 @@ def plot_partition_outputs(
         _plot_interaction_graph(
             result.supernodes,
             {},
-            result.soft_edges,
+            result.lookahead_edges,
             assign_path,
             node_label="S",
-            highlighted_nodes={result.qubit_to_supernode[q] for q in required_qubits},
+            highlighted_nodes=required_qubits,
             node_weights=supernode_weights,
             assignment=result.assignment
         )
@@ -504,7 +506,6 @@ def peel_slice(
         cluster = result.assignment[sn.id]
         if cluster < 0 or cluster >= num_pzs:
             raise ValueError(f"Supernode {sn.id} assigned to invalid cluster {cluster}")
-            continue
         for q in sn.qubits:
             if q in required_qubits:
                 partitions[cluster].tbd.add(q)
@@ -513,12 +514,12 @@ def peel_slice(
 
     # Weight components per supernode
     supernode_unary: dict[int, float] = {
-        sn.id: sum(result.unary_weights.get(q, 0.0) for q in sn.qubits) for sn in result.supernodes
+        sn.id: sum(result.lookahead_unary.get(q, 0.0) for q in sn.qubits) for sn in result.supernodes
     }
     supernode_internal: dict[int, float] = {}
     for sn in result.supernodes:
         internal_edge_sum = 0.0
-        for (u, v), weight in result.soft_edges.items():
+        for (u, v), weight in result.lookahead_edges.items():
             if result.qubit_to_supernode.get(u) == sn.id and result.qubit_to_supernode.get(v) == sn.id:
                 internal_edge_sum += weight
         supernode_internal[sn.id] = internal_edge_sum
@@ -526,12 +527,14 @@ def peel_slice(
     required_gates: set[int] = set(slice_gate_ids)
     subslices: list[dict[str, object]] = []
 
+    
+
     while required_gates:
         progress = False
-        
 
         # Select qubits into processing_zone up to capacity, lowest weight first
         for pz_idx, partition in enumerate(partitions):
+            print(f">{pz_idx}>> initial :", partition)
             if capacities[pz_idx] <= 0:
                 continue
             candidates: dict[int, set[int]] = defaultdict(set)
@@ -540,7 +543,7 @@ def peel_slice(
                 candidates[sn_id].add(q)
             # Score supernodes: unary + internal + connections to already selected qubits in this PZ
             pz_selected = set(partition.processing_zone)
-            edge_map = result.soft_edges
+            edge_map = result.lookahead_edges
 
             def peel_score(sn_id: int) -> float:
                 unary = supernode_unary.get(sn_id, 0.0)
@@ -555,6 +558,7 @@ def peel_slice(
             remaining_cap = max(capacities[pz_idx] - len(partition.processing_zone), 0)
 
             for sn_id, qs in ordered:
+                print("cap:", remaining_cap, "sn_id:", sn_id, "qs:", qs)
                 if remaining_cap < len(qs): # Only add a supernode if it fits entirely!
                     break
                 take = min(len(qs), remaining_cap)
@@ -564,9 +568,9 @@ def peel_slice(
                 remaining_cap -= take
                 progress = progress or bool(selected)
 
-            #print(f">{pz_idx}>> required gates:", required_gates)
-            #print(f">{pz_idx}>> progress?", progress)
-            #print(f">{pz_idx}>> partition state:", partition)
+            print(f">{pz_idx}>> required gates:", required_gates)
+            print(f">{pz_idx}>> progress?", progress)
+            print(f">{pz_idx}>> partition state:", partition)
 
         performed: set[int] = set()
         for gate_id in list(required_gates):
@@ -624,10 +628,152 @@ def peel_slice(
 
     return subslices
 
-def partition(
+
+def _compute_cost(
+    result: ContractionResult,
+    assignment: list[int],
+    num_pzs: int,
+    *,
+    lookahead_weight_factor: float = 1.0, # relative weight of lookahead vs current slice
+    balance_penalty: float = 0.5,
+) -> float:
+    if len(assignment) != len(result.supernodes):
+        raise ValueError("Assignment length mismatch.")
+
+    required_cut_penalty = 0.0
+    for (u, v), weight in result.required_edges.items():
+        su = result.qubit_to_supernode.get(u)
+        sv = result.qubit_to_supernode.get(v)
+        if su is None or sv is None:
+            continue
+        if assignment[su] != assignment[sv]:
+            required_cut_penalty += weight
+    if required_cut_penalty > 0:
+        # By construction (supernode contraction) required edges should never be cut.
+        # The required_cut_penalty computation only remains as sanity check and can be removed
+        # for efficiency once the invariant is trusted.
+        raise RuntimeError(f"Required edge cut detected in assignment: {required_cut_penalty}")
+
+    lookahead_cut_penalty = 0.0
+    for (su, sv), weight in result.lookahead_edges.items():
+        if assignment[su] != assignment[sv]:
+            lookahead_cut_penalty += weight
+
+    required_qubits = set(result.required_unary)
+    required_qubit_load = [0.0] * num_pzs
+    lookahead_qubit_load = [0.0] * num_pzs
+    for q in required_qubits:
+        su = result.qubit_to_supernode.get(q)
+        if su is None:
+            continue
+        cluster = assignment[su]
+        if 0 <= cluster < num_pzs:
+            required_qubit_load[cluster] += 1
+    for q, w in result.lookahead_unary.items():
+        su = result.qubit_to_supernode.get(q)
+        if su is None:
+            continue
+        cluster = assignment[su]
+        if 0 <= cluster < num_pzs:
+            lookahead_qubit_load[cluster] += w
+
+    def normalized_variance(arr: list[float]) -> float:
+        if not arr:
+            return 0.0
+        mean = sum(arr) / len(arr)
+        return sum((x/mean - 1) ** 2 for x in arr) / len(arr)
+
+    var_required = normalized_variance(required_qubit_load) if any(required_qubit_load) else 0.0
+    var_lookahead = normalized_variance(lookahead_qubit_load) if any(lookahead_qubit_load) else 0.0
+
+    total_lookahead_weight = sum(result.lookahead_edges.values())
+    lookahead_cut_penalty_norm = lookahead_cut_penalty / max(total_lookahead_weight, 1e-9)
+
+    return lookahead_cut_penalty_norm * lookahead_weight_factor + balance_penalty * (var_required + var_lookahead *lookahead_weight_factor)
+
+
+def tabu_optimize_partition(
+    result: ContractionResult,
+    num_pzs: int,
+    *,
+    max_iterations: int = 50,
+    tabu_list_length: int = 20,
+    lookahead_weight_factor: float = 1.0,
+    balance_penalty: float = 0.1,
+) -> tuple[list[int], list[int]]:
+    if result.assignment is None:
+        raise ValueError("Refinement requires an initial assignment.")
+    assignment = result.assignment.copy()
+    best_assignment = assignment.copy()
+    best_cost = _compute_cost(
+        result,
+        assignment,
+        num_pzs,
+        lookahead_weight_factor=lookahead_weight_factor,
+        balance_penalty=balance_penalty,
+    )
+    tabu_list: list[tuple[int, int]] = []
+
+    for _ in range(max_iterations):
+        current_cost = _compute_cost(
+            result,
+            assignment,
+            num_pzs,
+            lookahead_weight_factor=lookahead_weight_factor,
+            balance_penalty=balance_penalty,
+        )
+        best_move = None
+        best_move_cost = current_cost
+
+        for sn in range(len(assignment)):
+            current_cluster = assignment[sn]
+            for target in range(num_pzs):
+                if target == current_cluster:
+                    continue
+                move = (sn, target)
+                if move in tabu_list:
+                    continue
+                assignment[sn] = target
+                # TODO: change cost calculation to local gain/loss in order to avoid global cost recomputation for every move
+                cost = _compute_cost(
+                    result,
+                    assignment,
+                    num_pzs,
+                    lookahead_weight_factor=lookahead_weight_factor,
+                    balance_penalty=balance_penalty,
+                )
+                if cost < best_move_cost:
+                    best_move_cost = cost
+                    best_move = move
+                assignment[sn] = current_cluster
+
+        if best_move is None:
+            break
+
+        sn, target = best_move
+        prev_cluster = assignment[sn]
+        assignment[sn] = target
+        tabu_list.append((sn, prev_cluster))
+        if len(tabu_list) > tabu_list_length:
+            tabu_list.pop(0)
+
+        if best_move_cost < best_cost:
+            best_cost = best_move_cost
+            best_assignment = assignment.copy()
+
+    cluster_loads = [0] * num_pzs
+    for sn_id, cluster in enumerate(best_assignment):
+        if 0 <= cluster < num_pzs:
+            cluster_loads[cluster] += result.supernodes[sn_id].load
+
+    return best_assignment, cluster_loads
+
+
+def partition_slice(
     gate_info: dict[int, GateInfo],
     slice_gate_ids: Sequence[int],
     future_slices: Sequence[Sequence[int]],
+    num_qubits: int | None = None,
     *,
     sigma_edges: float = 1.0,
     sigma_single: float | None = None,
@@ -641,43 +787,63 @@ def partition(
 
     sigma_single = sigma_single if sigma_single is not None else sigma_edges
 
-    hard_edges = _build_edge_weights(slice_gate_ids, gate_info)
-    soft_edges = _build_decayed_edge_weights(future_slices, gate_info, sigma_edges)
-    hard_unary = {
+    # Build lookahead connectivity graph
+    required_edges = _build_edge_weights(slice_gate_ids, gate_info)
+    lookahead_edges = _build_decayed_edge_weights(future_slices, gate_info, sigma_edges)
+    required_unary = {
         gate_info[gate_id].qubits[0]
         for gate_id in slice_gate_ids
         if len(gate_info[gate_id].qubits) == 1
     }
     unary_weights = _build_unary_weights(future_slices, gate_info, sigma_single)
-    lookahead_gate_ids = [gate_id for slice in future_slices for gate_id in slice]
-    qubits = sorted({
-        q for gate_id in slice_gate_ids for q in gate_info[gate_id].qubits
-    } | {
-        q for gate_id in lookahead_gate_ids for q in gate_info[gate_id].qubits
-    })
 
-    supernodes, qubit_to_supernode = _contract_supernodes(qubits, hard_edges)
-    aggregated_soft_edges = _aggregate_soft_edges(soft_edges, qubit_to_supernode)
+    if not num_qubits:
+        raise ValueError("num_qubits must be provided or inferable from gate_info")
+    qubits = list(range(num_qubits))
+    
+
+
+    # perform contraction of qubits sharing multi-qubit gates into supernodes
+    supernodes, qubit_to_supernode = _contract_supernodes(qubits, required_edges)
+    aggregated_lookahead_edges = _aggregate_lookahead_edges(lookahead_edges, qubit_to_supernode)
+    
+    # greedy initial partitioning
     assignment: list[int] | None = None
     cluster_loads: list[int] | None = None
     if num_pzs is not None:
+        # TODO: use previous partitioning as seed, to skip greedy partitioning?
         assignment, cluster_loads = _greedy_initial_partition(
             supernodes,
-            aggregated_soft_edges,
+            aggregated_lookahead_edges,
             unary_weights,
             num_pzs,
             balance_penalty=balance_penalty,
         )
-    return ContractionResult(
+
+    result = ContractionResult(
         supernodes=supernodes,
         qubit_to_supernode=qubit_to_supernode,
-        hard_edges=hard_edges,
-        hard_unary=hard_unary,
-        soft_edges=aggregated_soft_edges,
-        unary_weights=unary_weights,
+        required_edges=required_edges,
+        required_unary=required_unary,
+        lookahead_edges=aggregated_lookahead_edges,
+        lookahead_unary=unary_weights,
         assignment=assignment,
         cluster_loads=cluster_loads,
     )
+
+    # tabu search to optimize partitions
+    print("result.assignment before tabu:", result.assignment)
+
+    if False: #num_pzs is not None and assignment is not None:
+        result.assignment, result.cluster_loads = tabu_optimize_partition(
+            result,
+            num_pzs,
+            balance_penalty=balance_penalty,
+        )
+
+    print("result.assignment after tabu:", result.assignment)
+
+    return result
 
 
 def _load_gate_metadata(qasm_path: Path) -> tuple[list[int], dict[int, GateInfo]]:
@@ -699,29 +865,74 @@ def _print_summary(result: ContractionResult) -> None:
     print(f"Supernodes: {len(result.supernodes)}")
     for node in result.supernodes:
         print(f"  S{node.id}: qubits={node.qubits}, load={node.load}")
-    print(f"Aggregated soft edges: {len(result.soft_edges)}")
-    for (u, v), weight in sorted(result.soft_edges.items()):
+    print(f"Aggregated lookahead edges: {len(result.lookahead_edges)}")
+    for (u, v), weight in sorted(result.lookahead_edges.items()):
         print(f"  S{u} -- S{v}: weight={weight:.2f}")
-    if result.unary_weights:
+    if result.lookahead_unary:
         print("Unary weights:")
-        for qubit, weight in sorted(result.unary_weights.items()):
+        for qubit, weight in sorted(result.lookahead_unary.items()):
             print(f"  q{qubit}: {weight:.2f}")
     if result.assignment is not None:
         print("Greedy assignment:", result.assignment)
         if result.cluster_loads:
             print("Cluster loads:", result.cluster_loads)
 
+    
+def fgp_tabu(sequence, gate_info, num_qubits, args) -> None:
 
-def main() -> None:
-    import argparse 
+    # Slice circuit into moments (max 1 gate per qubit)
+    # -> Gates within a slice commute, slices don't commute amongst each other
+    time_slices = _build_time_slices(sequence, gate_info, num_qubits)
 
+    partitioning_results = []
+    # Graph-based partitioning of circuit slices using exponentially decaying lookahead 
+    for idx, current_slice in enumerate(time_slices):
+        if args.lookahead_slices == math.inf:
+            future_slice_window = time_slices[idx + 1 :]
+        else:   
+            future_slice_window = time_slices[idx + 1 : idx + 1 + args.lookahead_slices]
+
+        result = partition_slice(
+            gate_info,
+            current_slice,
+            future_slice_window,
+            num_qubits=num_qubits,
+            sigma_edges=args.sigma,
+            sigma_single=args.sigma_single,
+            num_pzs=args.num_pzs,
+            balance_penalty=args.balance_penalty,
+        )
+        partitioning_results.append(result)
+    for idx, result in enumerate(partitioning_results):
+        print(f"\n=== Slice {idx} ===")
+        _print_summary(result)
+
+    # Process each slice for plotting and peeling
+    fgp_result = []
+    for idx, current_slice in enumerate(time_slices):
+        result = partitioning_results[idx]
+        if not args.no_plot:
+            plot_partition_outputs(num_qubits, result, gate_info, current_slice, future_slice_window, args.output_dir)
+        if args.capacity and args.num_pzs:
+            capacities = [args.capacity] * args.num_pzs
+            subslices = peel_slice(result, gate_info, current_slice, capacities)
+            fgp_result.append(subslices)
+
+    return fgp_result    
+
+    
+
+
+def main() -> None:    
+    from pathlib import Path
+    import argparse
     parser = argparse.ArgumentParser(description="Partition preview for slices with lookahead.")
     parser.add_argument("qasm", type=Path, help="Path to the QASM file.")
     parser.add_argument(
         "--lookahead-slices",
         type=int,
-        default=4,
-        help="Number of future slices used for the decayed lookahead weights.",
+        default=math.inf,
+        help="Number of future slices used for the decayed lookahead weights, default all.",
     )
     parser.add_argument(
         "--sigma",
@@ -751,7 +962,7 @@ def main() -> None:
         "--balance-penalty",
         type=float,
         default=1.0,
-        help="Soft penalty per existing load when placing supernodes (discourages imbalance).",
+        help="Penalty to discourage imbalance when placing supernodes.",
     )
     parser.add_argument(
         "--no-plot",
@@ -768,26 +979,8 @@ def main() -> None:
 
     sequence, gate_info = _load_gate_metadata(args.qasm)
     num_qubits = _infer_num_qubits(gate_info)
-    time_slices = _build_time_slices(sequence, gate_info, num_qubits)
-
-    for idx, current_slice in enumerate(time_slices):
-        future_slice_window = time_slices[idx + 1 : idx + 1 + args.lookahead_slices]
-
-        result = partition(
-            gate_info,
-            current_slice,
-            future_slice_window,
-            sigma_edges=args.sigma,
-            sigma_single=args.sigma_single,
-            num_pzs=args.num_pzs,
-            balance_penalty=args.balance_penalty,
-        )
-        #_print_summary(result)
-        if not args.no_plot:
-            plot_partition_outputs(num_qubits, result, gate_info, current_slice, future_slice_window, args.output_dir)
-        if args.capacity and args.num_pzs:
-            capacities = [args.capacity] * args.num_pzs
-            subslices = peel_slice(result, gate_info, current_slice, capacities)
+    
+    fgp_tabu(sequence, gate_info, num_qubits, args)
 
 
 
