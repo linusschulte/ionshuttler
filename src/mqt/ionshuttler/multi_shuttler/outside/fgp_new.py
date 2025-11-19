@@ -834,7 +834,7 @@ def partition_slice(
     # tabu search to optimize partitions
     print("result.assignment before tabu:", result.assignment)
 
-    if False: #num_pzs is not None and assignment is not None:
+    if num_pzs is not None and assignment is not None:
         result.assignment, result.cluster_loads = tabu_optimize_partition(
             result,
             num_pzs,
