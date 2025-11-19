@@ -545,6 +545,21 @@ def update_entry_and_exit_cycles(
                 continue
             all_cycles[ion] = [pz.parking_edge, pz.parking_edge]
 
+    # ensure ions sitting on the path_from_pz continue toward memory
+    for edge in pz.path_from_pz[:-1]:  # last edge has no successor
+        ion_on_edge = find_ion_in_edge(graph, edge)
+        if ion_on_edge is None or ion_on_edge in plan_active_ions:
+            continue
+        existing_cycle = all_cycles.get(ion_on_edge)
+        print(f"[DEBUG] existing cycle for ion {ion_on_edge} on edge {edge}: {existing_cycle}")
+        if existing_cycle and not (len(existing_cycle) == 2 and existing_cycle[0] == existing_cycle[1] == edge):
+            continue
+        rest_path = pz.rest_of_path_from_pz.get(edge, [])
+        if not rest_path:
+            continue
+        next_edge = rest_path[0]
+        all_cycles[ion_on_edge] = [edge, next_edge]
+
     return all_cycles
 
 
@@ -648,8 +663,9 @@ def rotate_free_cycles(graph: Graph, all_cycles: dict[int, list[Edge]], free_cyc
             if pz.out_of_parking_move is not None and pz.ion_to_move_out_of_pz != pz.out_of_parking_move:
                 pass
             else:
-                graph.edges[pz.parking_edge]["ions"].remove(pz.ion_to_move_out_of_pz)
-                graph.edges[pz.path_from_pz[0]]["ions"].append(pz.ion_to_move_out_of_pz)
+                ion_leaving = pz.ion_to_move_out_of_pz
+                graph.edges[pz.parking_edge]["ions"].remove(ion_leaving)
+                graph.edges[pz.path_from_pz[0]]["ions"].append(ion_leaving)
 
 
 def find_out_of_entry_moves(graph: Graph, other_next_edges: list[Edge]) -> dict[ProcessingZone, list[Edge]]:

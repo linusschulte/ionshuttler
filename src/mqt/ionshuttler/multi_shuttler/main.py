@@ -243,11 +243,11 @@ def main(config: dict[str, Any]) -> None:
             algo_params = {}
         algo_name_lower = algo_name.lower()
         if algo_name_lower == "fgp_roee":
-            from .outside.fgp_roee import compute_gate_partition
+            from .outside.fgp_roee import fgp_roee
 
             if "num_clusters" not in algo_params:
                 algo_params["num_clusters"] = len(graph.pzs)
-            result = compute_gate_partition(graph, **algo_params)
+            result = fgp_roee(graph, **algo_params)
             gate_partition_for_run = result.gate_partition_by_pz
             gate_assignment = result.gate_assignment
             if enforce_slice_plan:

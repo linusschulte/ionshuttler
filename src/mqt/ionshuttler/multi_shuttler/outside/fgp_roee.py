@@ -48,7 +48,7 @@ def _debug(*args: object) -> None:
         print("[FGP]", *args)
 
 
-def compute_gate_partition(
+def fgp_roee(
     graph: "Graph",
     *,
     num_clusters: int | None = None,
@@ -169,8 +169,12 @@ def compute_gate_partition(
     slice_plans: list[SlicePlan] = []
 
     for slice_assignment, slice_gate_ids in zip(assignments, time_slices):
+        required_qubits = {
+            q for gate_id in slice_gate_ids for q in gate_info[gate_id].qubits
+        }
         qubits_by_pz: dict[str, list[int]] = {pz_name: [] for pz_name in pz_names}
-        for qubit, cluster_idx in enumerate(slice_assignment):
+        for qubit in sorted(required_qubits):
+            cluster_idx = slice_assignment[qubit]
             if cluster_idx < len(pz_names):
                 qubits_by_pz[pz_names[cluster_idx]].append(qubit)
 
@@ -811,4 +815,4 @@ def _plot_slice_graph(
     plt.close()
 
 
-__all__ = ["FGPResult", "compute_gate_partition"]
+__all__ = ["FGPResult", "fgp_roee"]

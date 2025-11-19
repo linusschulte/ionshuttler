@@ -22,6 +22,8 @@ from .scheduling import (
     update_entry_and_exit_cycles,
 )
 
+DEBUG_FLAG = False
+
 if TYPE_CHECKING:
     from qiskit.dagcircuit import DAGDependency
 
@@ -244,6 +246,7 @@ def shuttle(
     current_plan: SlicePlan | None = None,
     plan_active: bool = False,
 ) -> None:
+    
     preprocess(graph, priority_queue)
 
 
@@ -261,9 +264,14 @@ def shuttle(
     for pz in graph.pzs:
         prio_queue = part_prio_queues[pz.name]
         move_list = create_move_list(graph, prio_queue, pz)
+        if graph.save and DEBUG_FLAG:
+            print(f"[debug][t={timestep}] PZ {pz.name} move_list: {move_list}")
         cycles, in_and_into_exit_moves = create_cycles_for_moves(graph, move_list, cycle_or_paths, pz)
+        if graph.save and cycles and DEBUG_FLAG:
+            print(f"[debug][t={timestep}] PZ {pz.name} initial cycles: {cycles}")
         # add cycles to all_cycles
         all_cycles = {**all_cycles, **cycles}
+        
 
     out_of_entry_moves = find_out_of_entry_moves(graph, other_next_edges=[])
 
@@ -286,10 +294,40 @@ def shuttle(
             prio_queue,
             plan_active_ions=plan_active_ions_for_pz,
         )
+        if graph.save and DEBUG_FLAG:
+            relevant = {
+                ion: all_cycles.get(ion)
+                for ion in set(move_list) | set((in_and_into_exit_moves_of_pz or {}).keys())
+                if ion in all_cycles
+            }
+            if relevant:
+                print(f"[debug][t={timestep}] PZ {pz.name} adjusted cycles: {relevant}")
 
+
+    # ensure any ion with a pending cycle appears in the priority queue
+    priority_queue_for_cycles: OrderedDict[int, str] = OrderedDict(priority_queue)
+    for ion in all_cycles:
+        if ion not in priority_queue_for_cycles:
+            edge = graph.state.get(ion)
+            pz_name = None
+            if edge is not None:
+                edge_idx = get_idx_from_idc(graph.idc_dict, edge)
+                pz_obj = graph.edge_to_pz_map.get(edge_idx)
+                if pz_obj is not None:
+                    pz_name = pz_obj.name
+            if pz_name is None:
+                pz_name = graph.map_to_pz.get(ion, graph.pzs[0].name if graph.pzs else "pz0")
+            priority_queue_for_cycles[ion] = pz_name
+            priority_queue_for_cycles.move_to_end(ion, last=False)
 
     # now general priority queue picks cycles to rotate
-    chains_to_rotate = find_movable_cycles(graph, all_cycles, priority_queue, cycle_or_paths)
+    chains_to_rotate = find_movable_cycles(graph, all_cycles, priority_queue_for_cycles, cycle_or_paths)
+    if graph.save and DEBUG_FLAG:
+        print(f"[debug][t={timestep}] chains_to_rotate: {chains_to_rotate}")
+        for ion in chains_to_rotate:
+            path = all_cycles.get(ion)
+            if path:
+                print(f"    ion {ion}: {path}")
     rotate_free_cycles(graph, all_cycles, chains_to_rotate)
 
 

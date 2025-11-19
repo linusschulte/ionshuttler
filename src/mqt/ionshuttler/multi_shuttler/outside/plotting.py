@@ -91,7 +91,17 @@ def plot_state(
     edge_color = nx.get_edge_attributes(graph, "color").values()
     node_color = list(nx.get_node_attributes(graph, "color").values())
     if plot_paper is False:
-        edge_labels = nx.get_edge_attributes(graph, "ions")
+        edge_labels_vertical: dict[Edge, str] = {}
+        edge_labels_regular: dict[Edge, str] = {}
+        ions = nx.get_edge_attributes(graph, "ions")
+        edge_types = nx.get_edge_attributes(graph, "edge_type")
+        for edge, label in ions.items():
+            display = f"{label} ({edge_types.get(edge, 'unknown')})"
+            (x1, y1), (x2, y2) = pos[edge[0]], pos[edge[1]]
+            if abs(x1 - x2) < 1e-9:
+                edge_labels_vertical[edge] = display
+            else:
+                edge_labels_regular[edge] = display
     node_size = list(nx.get_node_attributes(graph, "node_size").values())
 
     plt.figure(figsize=(20, 9))  # figsize=(max(pos.keys())[1] * 2, max(pos.keys())[0] * 2))
@@ -109,7 +119,10 @@ def plot_state(
         font_size=16,
     )
     if plot_paper is False:
-        nx.draw_networkx_edge_labels(graph, pos, edge_labels)
+        if edge_labels_regular:
+            nx.draw_networkx_edge_labels(graph, pos, edge_labels_regular)
+        if edge_labels_vertical:
+            nx.draw_networkx_edge_labels(graph, pos, edge_labels_vertical, rotate=False)
 
     # # reset edge labels for following iterations?
     # for edge in graph.edges:

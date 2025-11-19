@@ -102,7 +102,7 @@ def main(config: dict[str, Any]):
     seed = config.get("seed", 0)
     algorithm_name = config.get("algorithm_name")
     num_ions = config.get("num_ions")
-    use_dag = config.get("use_dag", True)
+    use_dag = config.get("use_dag", True) and not config.get("enforce_slice_plan", False)
     use_paths = config.get("use_paths", False)
     max_timesteps = config.get("max_timesteps", 100000)
     plot_flag = config.get("plot", False)
@@ -171,7 +171,7 @@ def main(config: dict[str, Any]):
         print(f"Error: num_pzs ({num_pzs_config}) is invalid or results in no PZs selected.")
         sys.exit(1)
 
-    print(f"Using {len(pzs_to_use)} PZs: {[pz.name for pz in pzs_to_use]}")
+    print(f"Using {len(pzs_to_use)} PZs: {[pz.name for pz in pzs_to_use]} with max {max_ions_per_pz} ions each")
     print(f"Architecture: {arch}, Seed: {seed}")
     print(f"Algorithm: {algorithm_name}, ions: {num_ions}")
     print(f"DAG-Compilation: {use_dag}, Conflict Resolution: {cycle_or_paths_str}")
@@ -329,14 +329,34 @@ def main(config: dict[str, Any]):
             algo_params = {}
         algo_name_lower = algo_name.lower()
         if algo_name_lower == "fgp_roee":
-            from outside.fgp_roee import compute_gate_partition
+            from outside.fgp_roee import fgp_roee
 
             if "num_clusters" not in algo_params:
                 algo_params["num_clusters"] = config.get("num_pzs", 1)
             if "capacity" not in algo_params:
                 algo_params["capacity"] = config.get("max_ions_per_pz", 1)
             print(algo_params)
-            result = compute_gate_partition(graph, **algo_params)
+
+            result = fgp_roee(graph, **algo_params)
+
+            gate_partition_for_run = result.gate_partition_by_pz
+            gate_assignment = result.gate_assignment
+            if enforce_slice_plan:
+                graph.initialize_slice_plan(result.slice_plan)
+            else:
+                graph.initialize_slice_plan(None)
+        elif algo_name_lower == "fgp_tabu":
+            from outside.fgp_tabu import fgp_tabu
+
+            if "num_clusters" not in algo_params:
+                algo_params["num_clusters"] = config.get("num_pzs", 1)
+            if "capacity" not in algo_params:
+                algo_params["capacity"] = config.get("max_ions_per_pz", 1)
+            if "lookahead_weight_factor" not in algo_params:
+                algo_params["lookahead_weight_factor"] = 1.0
+
+            result = fgp_tabu(graph, **algo_params)
+
             gate_partition_for_run = result.gate_partition_by_pz
             gate_assignment = result.gate_assignment
             if enforce_slice_plan:
@@ -384,8 +404,8 @@ def main(config: dict[str, Any]):
             print(f"  {pz_name}: {gate_ids}")
         if enforce_slice_plan:
             print("Enforcing slice plan based on gate partitioning.")
-            for slice in slice_plan_for_run:
-                print(f"  Slice: {slice}")
+            for i, slice in enumerate(slice_plan_for_run):
+                print(f"  Slice {i+1}: {slice}")
 
     # --- Run Simulation ---
 
