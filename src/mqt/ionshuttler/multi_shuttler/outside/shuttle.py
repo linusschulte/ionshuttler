@@ -24,7 +24,7 @@ from .scheduling import (
     update_entry_and_exit_cycles,
 )
 
-DEBUG_FLAG = False
+DEBUG_FLAG = 0
 
 if TYPE_CHECKING:
     from qiskit.dagcircuit import DAGDependency
@@ -268,10 +268,10 @@ def shuttle(
     for pz in graph.pzs:
         prio_queue = part_prio_queues[pz.name]
         move_list = create_move_list(graph, prio_queue, pz)
-        if graph.save and DEBUG_FLAG:
+        if DEBUG_FLAG:
             print(f"[debug][t={timestep}] PZ {pz.name} move_list: {move_list}")
         cycles, in_and_into_exit_moves = create_cycles_for_moves(graph, move_list, cycle_or_paths, pz)
-        if graph.save and cycles and DEBUG_FLAG:
+        if DEBUG_FLAG:
             print(f"[debug][t={timestep}] PZ {pz.name} initial cycles: {cycles}")
         # add cycles to all_cycles
         all_cycles = {**all_cycles, **cycles}
@@ -298,15 +298,20 @@ def shuttle(
             prio_queue,
             plan_active_ions=plan_active_ions_for_pz,
         )
-        if graph.save and DEBUG_FLAG:
+        if DEBUG_FLAG:
             relevant = {
                 ion: all_cycles.get(ion)
                 for ion in set(move_list) | set((in_and_into_exit_moves_of_pz or {}).keys())
                 if ion in all_cycles
             }
-            if relevant:
+            if relevant and DEBUG_FLAG:
                 print(f"[debug][t={timestep}] PZ {pz.name} adjusted cycles: {relevant}")
 
+
+    if DEBUG_FLAG:
+        print(f"[debug][t={timestep}] all_cycles snapshot:")
+        for ion, cycle in all_cycles.items():
+            print(f"  ion {ion}: {cycle}")
 
     # ensure any ion with a pending cycle appears in the priority queue
     priority_queue_for_cycles: OrderedDict[int, str] = OrderedDict(priority_queue)
@@ -326,7 +331,7 @@ def shuttle(
 
     # now general priority queue picks cycles to rotate
     chains_to_rotate = find_movable_cycles(graph, all_cycles, priority_queue_for_cycles, cycle_or_paths)
-    if graph.save and DEBUG_FLAG:
+    if DEBUG_FLAG:
         print(f"[debug][t={timestep}] chains_to_rotate: {chains_to_rotate}")
         for ion in chains_to_rotate:
             path = all_cycles.get(ion)

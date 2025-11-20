@@ -546,19 +546,19 @@ def update_entry_and_exit_cycles(
             all_cycles[ion] = [pz.parking_edge, pz.parking_edge]
 
     # ensure ions sitting on the path_from_pz continue toward memory
-    for edge in pz.path_from_pz[:-1]:  # last edge has no successor
-        ion_on_edge = find_ion_in_edge(graph, edge)
-        if ion_on_edge is None or ion_on_edge in plan_active_ions:
-            continue
-        existing_cycle = all_cycles.get(ion_on_edge)
-        print(f"[DEBUG] existing cycle for ion {ion_on_edge} on edge {edge}: {existing_cycle}")
-        if existing_cycle and not (len(existing_cycle) == 2 and existing_cycle[0] == existing_cycle[1] == edge):
-            continue
-        rest_path = pz.rest_of_path_from_pz.get(edge, [])
-        if not rest_path:
-            continue
-        next_edge = rest_path[0]
-        all_cycles[ion_on_edge] = [edge, next_edge]
+    #for edge in pz.path_from_pz[:-1]:  # last edge has no successor
+    #    ion_on_edge = find_ion_in_edge(graph, edge)
+    #    if ion_on_edge is None or ion_on_edge in plan_active_ions:
+    #        continue
+    #    existing_cycle = all_cycles.get(ion_on_edge)
+    #    print(f"[DEBUG] existing cycle for ion {ion_on_edge} on edge {edge}: {existing_cycle}")
+    #    if existing_cycle and not (len(existing_cycle) == 2 and existing_cycle[0] == existing_cycle[1] == edge):
+    #        continue
+    #    rest_path = pz.rest_of_path_from_pz.get(edge, [])
+    #    if not rest_path:
+    #        continue
+    #    next_edge = rest_path[0]
+    #    all_cycles[ion_on_edge] = [edge, next_edge]
 
     return all_cycles
 

@@ -509,9 +509,9 @@ if __name__ == "__main__":
     # Meta study configuration
     meta_study_config = {
         # Core architecture parameters
-        'num_ions': [10],
-        'num_pzs': [3],
-        'ions_per_pz': [3],
+        'num_ions': [8],
+        'num_pzs': [2],
+        'ions_per_pz': [2],
         'grid_size': [3],
         'mz_trap_size': [1],
         'use_dag': [True],
@@ -529,7 +529,7 @@ if __name__ == "__main__":
                 },
                 'sampling': {
                     'method': 'lhs',
-                    'num_samples': 30,
+                    'num_samples': 100,
                 },
             },
         ]
