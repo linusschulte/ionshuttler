@@ -51,7 +51,7 @@ def _debug(*args: object) -> None:
 def fgp_roee(
     graph: "Graph",
     *,
-    num_clusters: int | None = None,
+    num_pzs: int | None = None,
     capacity: int | None = None,
     sigma: float = 1.0,
     large_weight: float = 1e6,
@@ -64,11 +64,11 @@ def fgp_roee(
     ----------
     graph:
         Current graph instance containing the gate sequence and gate metadata.
-    num_clusters:
+    num_pzs:
         Number of processing zones to partition into. Defaults to ``len(graph.pzs)``.
     capacity:
         Maximum number of qubits that may reside in a single processing zone.
-        Defaults to ``ceil(num_qubits / num_clusters)``.
+        Defaults to ``ceil(num_qubits / num_pzs)``.
     sigma:
         Decay constant used in the lookahead weighting (``2 ** (-d / sigma)``).
     large_weight:
@@ -87,11 +87,11 @@ def fgp_roee(
         gate_partition_by_pz = {pz.name: [] for pz in graph.pzs}
         return FGPResult([], gate_partition_by_pz, {}, [], [])
 
-    _debug("Starting FGP partitioning into", num_clusters, "clusters")
+    _debug("Starting FGP partitioning into", num_pzs, "clusters")
 
     # Setup: determine clusters and capacity constraints
-    num_clusters = num_clusters or len(graph.pzs)
-    if num_clusters <= 0:
+    num_pzs = num_pzs or len(graph.pzs)
+    if num_pzs <= 0:
         msg = "Number of processing zones must be positive."
         raise ValueError(msg)
 
@@ -104,8 +104,8 @@ def fgp_roee(
         return FGPResult([], gate_partition_by_pz, {}, [], [])
 
     num_qubits = _infer_num_qubits(gate_info)
-    capacity = max(capacity or math.ceil(num_qubits / num_clusters), 1)
-    _debug(f"num_qubits={num_qubits}, num_clusters={num_clusters}, capacity={capacity}")
+    capacity = max(capacity or math.ceil(num_qubits / num_pzs), 1)
+    _debug(f"num_qubits={num_qubits}, num_pzs={num_pzs}, capacity={capacity}")
 
     # Phase 1: Group gates into time slices respecting original order
     time_slices = _build_time_slices(all_gate_ids, gate_info, num_qubits=len(graph.state))
@@ -120,7 +120,7 @@ def fgp_roee(
 
     # Phase 2: Create initial partition based on total qubit interaction frequency
     total_weights = _build_total_interaction_graph(two_qubit_gate_ids, gate_info)
-    initial_assignment = _initial_partition(num_qubits, num_clusters, capacity, total_weights)
+    initial_assignment = _initial_partition(num_qubits, num_pzs, capacity, total_weights)
     _debug("Initial assignment:", initial_assignment)
 
     # Phase 3: Precompute weighted interactions for each slice (current + future lookahead)
@@ -144,7 +144,7 @@ def fgp_roee(
             previous_assignment,
             neighbor_map,
             required_edges,
-            num_clusters,
+            num_pzs,
             capacity,
             max_iterations_multiplier,
         )
@@ -160,7 +160,7 @@ def fgp_roee(
     
     # Phase 6: Map final assignments to processing zone names
     pz_names = [pz.name for pz in graph.pzs]
-    if num_clusters > len(pz_names):
+    if num_pzs > len(pz_names):
         msg = "The number of clusters exceeds the number of processing zones defined on the graph."
         raise ValueError(msg)
 
@@ -306,7 +306,7 @@ def _build_total_interaction_graph(
 
 def _initial_partition(
     num_qubits: int,
-    num_clusters: int,
+    num_pzs: int,
     capacity: int,
     weights: dict[tuple[int, int], float],
 ) -> list[int]:
@@ -319,14 +319,14 @@ def _initial_partition(
 
     # Process qubits in order of decreasing connectivity
     sorted_qubits = sorted(range(num_qubits), key=lambda q: neighbor_weights[q], reverse=True)
-    clusters: list[set[int]] = [set() for _ in range(num_clusters)]
+    clusters: list[set[int]] = [set() for _ in range(num_pzs)]
     assignment = [-1] * num_qubits
 
     for qubit in sorted_qubits:
         # Find cluster that maximizes internal edge weight (greedy placement)
         best_cluster = None
         best_gain = -math.inf
-        for cluster_idx in range(num_clusters):
+        for cluster_idx in range(num_pzs):
             if len(clusters[cluster_idx]) >= capacity:
                 continue
             gain = sum(
@@ -339,7 +339,7 @@ def _initial_partition(
         
         # Fallback to least loaded cluster if no beneficial placement found
         if best_cluster is None:
-            best_cluster = min(range(num_clusters), key=lambda idx: len(clusters[idx]))
+            best_cluster = min(range(num_pzs), key=lambda idx: len(clusters[idx]))
         
         assignment[qubit] = best_cluster
         clusters[best_cluster].add(qubit)
@@ -402,7 +402,7 @@ def _roee_partition(
     previous_assignment: list[int],
     neighbor_map: list[list[tuple[int, float]]],
     required_edges: set[tuple[int, int]],
-    num_clusters: int,
+    num_pzs: int,
     capacity: int,
     max_iterations_multiplier: int,
 ) -> list[int]:
@@ -411,7 +411,7 @@ def _roee_partition(
     assignment = previous_assignment.copy()
     
     # Maintain cluster membership for efficient capacity checking
-    clusters: list[set[int]] = [set() for _ in range(num_clusters)]
+    clusters: list[set[int]] = [set() for _ in range(num_pzs)]
     for qubit, cluster_idx in enumerate(assignment):
         clusters[cluster_idx].add(qubit)
 

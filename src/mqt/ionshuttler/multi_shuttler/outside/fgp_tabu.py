@@ -171,10 +171,6 @@ def _align_clusters_to_previous(
 ) -> None:
     prev_qubit_assignment = [-1] * num_qubits
 
-    print("PARTITIONING RESULTS BEFORE ALIGNMENT:")
-    for idx, res in enumerate(partitioning_results):
-        print(f" Slice {idx}: assignment = {res.assignment}, cluster_loads = {res.cluster_loads}")
-
     for slice_idx, result in enumerate(partitioning_results):
         if result.assignment is None:
             prev_qubit_assignment = [-1] * num_qubits
@@ -186,8 +182,6 @@ def _align_clusters_to_previous(
             }
         else:
             active_qubits = None
-
-        print("-- previous qubit assignment:", prev_qubit_assignment)
 
         counts = [[0] * num_pzs for _ in range(num_pzs)]
         for sn in result.supernodes:
@@ -232,7 +226,7 @@ def _align_clusters_to_previous(
 def fgp_tabu(
     graph: Graph,
     *,
-    num_clusters: int | None = None,
+    num_pzs: int | None = None,
     capacity: int | None = None,
     sigma: float = 1.0,
     sigma_single: float | None = None,
@@ -249,20 +243,20 @@ def fgp_tabu(
         return FGPResult([], gate_partition_by_pz, {}, [], [])
 
     gate_info = graph.gate_info
-    num_clusters = num_clusters or len(graph.pzs)
-    if num_clusters <= 0:
+    num_pzs = num_pzs or len(graph.pzs)
+    if num_pzs <= 0:
         raise ValueError("Number of processing zones must be positive.")
 
 
     num_qubits = _infer_num_qubits(gate_info)
-    capacity = max(capacity or math.ceil(num_qubits / num_clusters), 1)
+    capacity = max(capacity or math.ceil(num_qubits / num_pzs), 1)
     pz_names = [pz.name for pz in graph.pzs]
 
     partition_output = _run_fgp_tabu(
         graph.sequence,
         gate_info,
         num_qubits=num_qubits,
-        num_pzs=num_clusters,
+        num_pzs=num_pzs,
         sigma_edges=sigma,
         sigma_single=sigma_single,
         capacity=capacity,

@@ -8,11 +8,11 @@
   "qasm_base_dir": "inputs/qasm_files",
   "use_dag": false,
   "use_paths": false,
-  "max_timesteps": 3000,
+  "max_timesteps": 10000,
   "plot": false,
   "save": false,
   "debug_gate_tracking": false,
   "failing_junctions": 0,
-  "gate_partition_algorithm": {"name": "fgp_roee", "params": {"sigma": 1, "aggregate_slices": 1}},
+  "gate_partition_algorithm": {"name": "fgp_tabu", "params": {}},
   "enforce_slice_plan": true
 }

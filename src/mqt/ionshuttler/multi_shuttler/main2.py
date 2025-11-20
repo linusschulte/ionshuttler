@@ -11,7 +11,9 @@ from typing import Any
 
 import h5py
 import numpy as np
+from scipy.stats import qmc
 
+PRINT_DEBUG = 0
 
 from outside.compilation import (
     build_node_gate_id_lookup,
@@ -171,10 +173,11 @@ def main(config: dict[str, Any]):
         print(f"Error: num_pzs ({num_pzs_config}) is invalid or results in no PZs selected.")
         sys.exit(1)
 
-    print(f"Using {len(pzs_to_use)} PZs: {[pz.name for pz in pzs_to_use]} with max {max_ions_per_pz} ions each")
-    print(f"Architecture: {arch}, Seed: {seed}")
-    print(f"Algorithm: {algorithm_name}, ions: {num_ions}")
-    print(f"DAG-Compilation: {use_dag}, Conflict Resolution: {cycle_or_paths_str}")
+    if PRINT_DEBUG:
+        print(f"Using {len(pzs_to_use)} PZs: {[pz.name for pz in pzs_to_use]} with max {max_ions_per_pz} ions each")
+        print(f"Architecture: {arch}, Seed: {seed}")
+        print(f"Algorithm: {algorithm_name}, ions: {num_ions}")
+        print(f"DAG-Compilation: {use_dag}, Conflict Resolution: {cycle_or_paths_str}")
 
     # --- Graph Creation ---
     basegraph_creator = GraphCreator(m, n, v, h, failing_junctions, pzs_to_use)
@@ -191,10 +194,6 @@ def main(config: dict[str, Any]):
     graph.save = save_flag
     graph.arch = str(arch)  # For plotting/logging
     graph.debug_gate_tracking = debug_gate_tracking
-
-    len(mz_graph.edges())
-
-    print(f"Number of ions: {num_ions}")
 
     qasm_file_path = qasm_base_dir / algorithm_name / f"{algorithm_name}_{num_ions}.qasm"
 
@@ -223,7 +222,10 @@ def main(config: dict[str, Any]):
         first_gate_id = graph.sequence[0]
         gate_meta = graph.gate_info[first_gate_id]
     seq_length = len(graph.sequence)
-    print(f"Number of Gates: {seq_length}")
+    
+    if PRINT_DEBUG:
+        print(f"Number of ions: {num_ions}")
+        print(f"Number of Gates: {seq_length}")
 
     # --- Partitioning (legacy) ---
     partitioning = True  # Make configurable
@@ -244,7 +246,7 @@ def main(config: dict[str, Any]):
                 part = [*part[: len(graph.pzs) - 1], merged]
 
         partitions = {pz.name: part[i] for i, pz in enumerate(graph.pzs)}
-        print(f"Partitions: {partitions}")
+        #print(f"Partitions: {partitions}")
     else:
         # Fallback: Assign ions to closest PZ (example logic)
         print("Disabling Partitioning has to be implemented.")
@@ -301,7 +303,8 @@ def main(config: dict[str, Any]):
             graph.gate_info = initial_circuit.gate_info
             graph.dag_gate_id_lookup = {}
     else:
-        print("DAG disabled, using static QASM sequence.")
+        if PRINT_DEBUG:
+            print("DAG disabled, using static QASM sequence.")
         graph.dag_gate_id_lookup = {}
 
 
@@ -331,8 +334,8 @@ def main(config: dict[str, Any]):
         if algo_name_lower == "fgp_roee":
             from outside.fgp_roee import fgp_roee
 
-            if "num_clusters" not in algo_params:
-                algo_params["num_clusters"] = config.get("num_pzs", 1)
+            if "num_pzs" not in algo_params:
+                algo_params["num_pzs"] = config.get("num_pzs", 1)
             if "capacity" not in algo_params:
                 algo_params["capacity"] = config.get("max_ions_per_pz", 1)
             print(algo_params)
@@ -348,12 +351,13 @@ def main(config: dict[str, Any]):
         elif algo_name_lower == "fgp_tabu":
             from outside.fgp_tabu import fgp_tabu
 
-            if "num_clusters" not in algo_params:
-                algo_params["num_clusters"] = config.get("num_pzs", 1)
+            if "num_pzs" not in algo_params:
+                algo_params["num_pzs"] = config.get("num_pzs", 1)
             if "capacity" not in algo_params:
                 algo_params["capacity"] = config.get("max_ions_per_pz", 1)
             if "lookahead_weight_factor" not in algo_params:
                 algo_params["lookahead_weight_factor"] = 1.0
+            
 
             result = fgp_tabu(graph, **algo_params)
 
@@ -398,14 +402,14 @@ def main(config: dict[str, Any]):
     graph.gate_pz_assignment = gate_assignment
     graph.current_gate_by_pz = {}
 
-    if gate_assignment:
-        print("Gate assignment to PZs:")
-        for pz_name, gate_ids in gate_partition_for_run.items():
-            print(f"  {pz_name}: {gate_ids}")
-        if enforce_slice_plan:
-            print("Enforcing slice plan based on gate partitioning.")
-            for i, slice in enumerate(slice_plan_for_run):
-                print(f"  Slice {i+1}: {slice}")
+    #if gate_assignment:
+    #    print("Gate assignment to PZs:")
+    #    for pz_name, gate_ids in gate_partition_for_run.items():
+    #        print(f"  {pz_name}: {gate_ids}")
+    #    if enforce_slice_plan:
+    #        print("Enforcing slice plan based on gate partitioning.")
+    #        for i, slice in enumerate(slice_plan_for_run):
+    #            print(f"  Slice {i+1}: {slice}")
 
     # --- Run Simulation ---
 
@@ -487,39 +491,110 @@ if __name__ == "__main__":
     pathlib.Path("outputs").mkdir(exist_ok=True)
     
     # Helper function to check if parameter set exists
-    def parameter_set_exists(f, num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice):
+    def parameter_set_exists(f, run_params: dict) -> bool:
         if 'results' not in f:
             return False
         results_group = f['results']
         for run_name in results_group.keys():
             run_group = results_group[run_name]
-            if (run_group.attrs.get('num_pzs') == num_pz and
-                run_group.attrs.get('ions_per_pz') == ions_pz and
-                run_group.attrs.get('grid_size') == grid_size and
-                run_group.attrs.get('mz_trap_size') == mz_trap_size and
-                run_group.attrs.get('use_dag') == use_dag and
-                run_group.attrs.get('partitioning_algorithm') == (str(partitioning_alg) if partitioning_alg else 'none') and
-                run_group.attrs.get('enforce_slice_plan') == enforce_slice):
+            # Check all stored attributes match the run parameters
+            match = all(
+                run_group.attrs.get(key) == value
+                for key, value in run_params.items()
+            )
+            if match:
                 return True
         return False
     
-    # meta study overwrite:
-    num_ions = [5,10,15]
-    num_pzs = [2,3]
-    ions_per_pz = [2,3]
-    grid_sizes = [3,5,7]
-    mz_trap_sizes = [1]
-    dag_options = [True, False]
-    partitioning_options = [None, config.get('gate_partition_algorithm')]  # None means no partitioning algorithm
-    enforce_slice_plan_options = [True, False]
+    # Meta study configuration
+    meta_study_config = {
+        # Core architecture parameters
+        'num_ions': [10],
+        'num_pzs': [3],
+        'ions_per_pz': [3],
+        'grid_size': [3],
+        'mz_trap_size': [1],
+        'use_dag': [True],
+        'enforce_slice_plan': [True],
+        
+        # Partitioning algorithm configurations
+        'partitioning_algorithms': [
+            {'name': 'none'},  # No partitioning
+            {
+                'name': 'fgp_tabu',
+                'params': {
+                    'lookahead_weight_factor': [0.1, 0.5, 1.0, 2.0],
+                    'balance_penalty': [0.1, 0.5, 1.0, 2.0],
+                    'sigma': [0.1, 0.5, 1.0, 2.0],
+                },
+                'sampling': {
+                    'method': 'lhs',
+                    'num_samples': 30,
+                },
+            },
+        ]
+    }
     
-    valid_combinations = [
-        (num_ion, num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice)
-        for num_ion, num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice in product(
-            num_ions, num_pzs, ions_per_pz, grid_sizes, mz_trap_sizes, dag_options, partitioning_options, enforce_slice_plan_options
-        )
-        if not (enforce_slice and partitioning_alg is None)
-    ]
+    # Generate all valid combinations
+    valid_combinations = []
+    
+    # Extract base parameter ranges
+    base_params = {k: v for k, v in meta_study_config.items() if k != 'partitioning_algorithms'}
+    base_param_names = [k for k in base_params.keys()]
+    base_param_values = [base_params[k] for k in base_param_names]
+    
+    # Iterate through all base parameter combinations
+    for base_combo in product(*base_param_values):
+        base_dict = dict(zip(base_param_names, base_combo))
+        
+        # For each partitioning algorithm configuration
+        for algo_config in meta_study_config['partitioning_algorithms']:
+            algo_name = algo_config['name']
+            
+            # Skip 'none' partitioning if enforce_slice_plan is True
+            if algo_name == 'none' and base_dict.get('enforce_slice_plan', False):
+                continue
+            
+            if algo_name == 'none':
+                # No algorithm parameters to expand
+                params_dict = base_dict.copy()
+                params_dict['partitioning_algorithm'] = 'none'
+                valid_combinations.append(params_dict)
+            else:
+                # Generate all combinations of algorithm parameters
+                algo_params = algo_config.get('params', {})
+                if algo_params:
+                    algo_param_names = list(algo_params.keys())
+                    algo_param_values = [algo_params[k] for k in algo_param_names]
+                    sampling_cfg = algo_config.get('sampling')
+                    if sampling_cfg and sampling_cfg.get('method') == 'lhs':
+                        num_samples = int(sampling_cfg.get('num_samples', 10))
+                        lower_bounds = np.array([min(vals) for vals in algo_param_values], dtype=float)
+                        upper_bounds = np.array([max(vals) for vals in algo_param_values], dtype=float)
+                        sampler = qmc.LatinHypercube(d=len(algo_param_names))
+                        lhs_sample = sampler.random(num_samples)
+                        scaled = qmc.scale(lhs_sample, lower_bounds, upper_bounds)
+                        for sample_vals in scaled:
+                            params_dict = base_dict.copy()
+                            params_dict['partitioning_algorithm'] = algo_name
+                            for param_name, param_value in zip(algo_param_names, sample_vals):
+                                params_dict[f'algo_{param_name}'] = float(param_value)
+                            valid_combinations.append(params_dict)
+                    else:
+                        for algo_combo in product(*algo_param_values):
+                            params_dict = base_dict.copy()
+                            params_dict['partitioning_algorithm'] = algo_name
+                            
+                            # Add algorithm-specific parameters with prefix
+                            for param_name, param_value in zip(algo_param_names, algo_combo):
+                                params_dict[f'algo_{param_name}'] = param_value
+                            
+                            valid_combinations.append(params_dict)
+                else:
+                    # Algorithm has no parameters
+                    params_dict = base_dict.copy()
+                    params_dict['partitioning_algorithm'] = algo_name
+                    valid_combinations.append(params_dict)
     
     # Open file in append mode, create if doesn't exist
     with h5py.File(results_file, 'a') as f:
@@ -543,46 +618,64 @@ if __name__ == "__main__":
         print(f"Total combinations: {total_combinations}")
         print(f"Existing runs in file: {existing_runs}")
         
-        for num_ion, num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice in valid_combinations:
+        best_timesteps = None
+        best_params = None
+
+        for run_params in valid_combinations:
             # Check if this parameter set already exists
-            if parameter_set_exists(f, num_pz, ions_pz, grid_size, mz_trap_size, use_dag, partitioning_alg, enforce_slice):
-                print(f"\nSkipping existing parameter set: {num_ion} ions on {grid_size}x{grid_size} grid, MZ {mz_trap_size}, PZs {num_pz}, Ions/PZ {ions_pz}, DAG {use_dag}, Part {partitioning_alg}, Enforce {enforce_slice}")
+            if parameter_set_exists(f, run_params):
+                print(f"\nSkipping existing parameter set: {run_params}")
                 skipped += 1
                 continue
             
             # Update config for this run
-            config["num_ions"] = num_ion
-            config["arch"] = [grid_size, grid_size, mz_trap_size, mz_trap_size]
-            config["num_pzs"] = num_pz
-            config["max_ions_per_pz"] = ions_pz
-            config["use_dag"] = use_dag
-            config["enforce_slice_plan"] = enforce_slice
+            # Define mapping from run_params keys to config keys and their transformations
+            param_mapping = {
+                'num_ions': lambda v: v,
+                'num_pzs': lambda v: v,
+                'ions_per_pz': ('max_ions_per_pz', lambda v: v),
+                'use_dag': lambda v: v,
+                'enforce_slice_plan': lambda v: v,
+                'grid_size': ('arch', lambda v: [v, v, run_params['mz_trap_size'], run_params['mz_trap_size']]),
+            }
             
-            if partitioning_alg is None:
+            # Apply direct parameter mappings
+            for param_key, param_value in run_params.items():
+                if param_key in param_mapping:
+                    mapping = param_mapping[param_key]
+                    if isinstance(mapping, tuple):
+                        config_key, transform = mapping
+                        config[config_key] = transform(param_value)
+                    else:
+                        config[param_key] = mapping(param_value)
+            
+            # Handle partitioning algorithm
+            if run_params['partitioning_algorithm'] == 'none':
                 config.pop("gate_partition_algorithm", None)
             else:
-                config["gate_partition_algorithm"] = partitioning_alg
-                if isinstance(partitioning_alg, dict):
-                    params = config["gate_partition_algorithm"].setdefault("params", {})
-                    params["num_clusters"] = num_pz
-                    params["capacity"] = ions_pz
+                # Extract algorithm parameters from run_params
+                algo_params = {
+                    key.replace('algo_', ''): value 
+                    for key, value in run_params.items() 
+                    if key.startswith('algo_')
+                }
+                algo_params['num_pzs'] = run_params['num_pzs']
+                algo_params['capacity'] = run_params['ions_per_pz']
+                
+                config["gate_partition_algorithm"] = {
+                    "name": run_params['partitioning_algorithm'],
+                    "params": algo_params
+                }
             
-            print(f"\n=== Run {result_index + 1} (New) ===")
-            print(f"Grid: {grid_size}x{grid_size}, MZ trap size: {mz_trap_size}")
-            print(f"PZs: {num_pz}, Ions per PZ: {ions_pz}")
-            print(f"DAG: {use_dag}, Partitioning: {partitioning_alg}, Enforce slice: {enforce_slice}")
+            print(f"\n=== Run {result_index + 1} / {total_combinations} (New) ===")
+            #print(f"Config: {run_params}")
             
             run_name = f'run_{result_index:04d}'
             run_group = results_group.create_group(run_name)
 
-            run_group.attrs['num_ions'] = num_ion
-            run_group.attrs['num_pzs'] = num_pz
-            run_group.attrs['ions_per_pz'] = ions_pz
-            run_group.attrs['grid_size'] = grid_size
-            run_group.attrs['mz_trap_size'] = mz_trap_size
-            run_group.attrs['use_dag'] = use_dag
-            run_group.attrs['partitioning_algorithm'] = str(partitioning_alg) if partitioning_alg else 'none'
-            run_group.attrs['enforce_slice_plan'] = enforce_slice
+            # Store all run parameters as attributes
+            for key, value in run_params.items():
+                run_group.attrs[key] = value
             
             try:
                 final_timesteps, cpu_time = execute_run(config)
@@ -596,7 +689,16 @@ if __name__ == "__main__":
                 
                 
                 print(f"Completed: {final_timesteps} timesteps, {cpu_time.total_seconds():.2f}s CPU time")
+                if run_group.attrs['success']:
+                    if best_timesteps is None or final_timesteps < best_timesteps:
+                        best_timesteps = final_timesteps
+                        best_params = run_params.copy()
                 
+            except KeyboardInterrupt:
+                print("Meta study interrupted by user. Current configuration will be retried on the next run.")
+                # Remove the partially created group so the run can resume later
+                del results_group[run_name]
+                raise
             except Exception as e:
                 print(f"Failed: {str(e)}")
                 
@@ -607,3 +709,5 @@ if __name__ == "__main__":
     
     print(f"\nAll simulations completed. Skipped {skipped} existing parameter sets.")
     print(f"Results saved to {results_file}")
+    if best_params is not None:
+        print(f"Best run achieved {best_timesteps} timesteps with parameters: {best_params}")

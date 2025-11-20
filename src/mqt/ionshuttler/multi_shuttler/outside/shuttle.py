@@ -5,6 +5,8 @@ from collections import Counter, OrderedDict
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from more_itertools import last
+
 from .compilation import get_all_first_gates_and_update_sequence_non_destructive, remove_processed_gates
 from .cycles import get_ions
 from .graph_utils import get_idc_from_idx, get_idx_from_idc
@@ -43,6 +45,8 @@ def check_duplicates(graph: Graph) -> None:
         edge_idc = get_idc_from_idx(graph.idc_dict, idx)
         if graph.get_edge_data(edge_idc[0], edge_idc[1])["edge_type"] != "parking_edge" and count > 1:
             message = f"More than one ion in edge {edge_idc}, arch: {graph.arch}, circuit depth: {len(graph.sequence)}, seed: {graph.seed}!"
+            print("Last state:")
+            print(graph.state)
             raise AssertionError(message)
 
         if (
