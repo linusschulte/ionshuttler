@@ -15,6 +15,8 @@ from .fgp_roee import FGPResult, _build_time_slices
 from .graph import Graph
 from .types import GateInfo, SlicePlan
 
+DEBUG_FLAG = 0
+
 @dataclass(slots=True)
 class Supernode:
     """Collapsed component that groups qubits that share a multi-qubit gate."""
@@ -36,6 +38,8 @@ class ContractionResult:
     lookahead_unary: dict[int, float]
     assignment: list[int] | None
     cluster_loads: list[int] | None
+    pre_tabu_cost: float | None = None
+    post_tabu_cost: float | None = None
 
 
 @dataclass(slots=True)
@@ -44,183 +48,6 @@ class Partition:
     memory_zone: set[int]
     tbd: set[int]
 
-
-def _run_fgp_tabu(
-    sequence: Sequence[int],
-    gate_info: dict[int, GateInfo],
-    *,
-    num_qubits: int,
-    num_pzs: int | None,
-    sigma_edges: float,
-    sigma_single: float | None,
-    
-    capacity: int | None,
-    pz_names: Sequence[str] | None,
-    enable_plots: bool = False,
-    output_dir: Path | None = None,
-    balance_penalty: float,
-    max_iterations: int = 50,
-    tabu_list_length: int = 20,
-    lookahead_weight_factor: float,
-    lookahead_slices: int | float,
-    align_processing_only: bool = False,
-
-) -> dict[str, object]:
-    """Core partition routine shared by CLI and API entry points."""
-
-    time_slices = _build_time_slices(sequence, gate_info, num_qubits)
-    partitioning_results: list[ContractionResult] = []
-    future_windows: list[Sequence[Sequence[int]]] = []
-
-    for idx, current_slice in enumerate(time_slices):
-        if lookahead_slices == math.inf:
-            future_slice_window = time_slices[idx + 1 :]
-        else:
-            future_slice_window = time_slices[idx + 1 : idx + 1 + int(lookahead_slices)]
-
-        result = partition_slice(
-            gate_info,
-            current_slice,
-            future_slice_window,
-            num_qubits=num_qubits,
-            sigma_edges=sigma_edges,
-            sigma_single=sigma_single,
-            num_pzs=num_pzs,
-            max_iterations=max_iterations,
-            tabu_list_length=tabu_list_length,
-            balance_penalty=balance_penalty,
-            lookahead_weight_factor=lookahead_weight_factor,
-        )
-        partitioning_results.append(result)
-
-    if num_pzs:
-        _align_clusters_to_previous(
-            partitioning_results,
-            time_slices,
-            gate_info,
-            num_qubits,
-            num_pzs,
-            processing_only=align_processing_only,
-        )
-        future_windows.append(future_slice_window)
-
-    peeled_subslices: list[list[dict[str, object]] | None] = [None] * len(time_slices)
-    for idx, current_slice in enumerate(time_slices):
-        result = partitioning_results[idx]
-        if enable_plots and output_dir is not None:
-            plot_partition_outputs(
-                num_qubits,
-                result,
-                gate_info,
-                current_slice,
-                future_windows[idx],
-                output_dir,
-            )
-        if capacity and num_pzs:
-            capacities = [capacity] * num_pzs
-            subslices = peel_slice(result, gate_info, current_slice, capacities)
-            peeled_subslices[idx] = subslices
-
-    assignments: list[list[int]] = []
-    gate_partition_by_pz: dict[str, list[int]] = {}
-    gate_assignment: dict[int, str] = {}
-    slice_plans: list[SlicePlan] = []
-    if num_pzs:
-        resolved_pz_names = list(pz_names) if pz_names else [f"PZ{i}" for i in range(num_pzs)]
-        peeled_for_helper: Sequence[Sequence[dict[str, object]]] | None = None
-        if any(peeled_subslices):
-            peeled_for_helper = [
-                subslice if subslice is not None else []
-                for subslice in peeled_subslices
-            ]
-        (
-            assignments,
-            slice_plans,
-            gate_partition_by_pz,
-            gate_assignment,
-        ) = _build_slice_plans_from_results(
-            partitioning_results,
-            time_slices,
-            gate_info,
-            resolved_pz_names,
-            num_qubits=num_qubits,
-            peeled_subslices=peeled_for_helper,
-        )
-
-    return {
-        "partition_results": partitioning_results,
-        "qubit_assignments": assignments,
-        "gate_partition_by_pz": gate_partition_by_pz,
-        "gate_assignment": gate_assignment,
-        "slice_plan": slice_plans,
-        "peeled_subslices": [
-            subslice if subslice is not None else [] for subslice in peeled_subslices
-        ],
-        "time_slices": time_slices,
-    }
-
-
-def _align_clusters_to_previous(
-    partitioning_results: Sequence[ContractionResult],
-    time_slices: Sequence[Sequence[int]],
-    gate_info: dict[int, GateInfo],
-    num_qubits: int,
-    num_pzs: int,
-    *,
-    processing_only: bool = False,
-) -> None:
-    prev_qubit_assignment = [-1] * num_qubits
-
-    for slice_idx, result in enumerate(partitioning_results):
-        if result.assignment is None:
-            prev_qubit_assignment = [-1] * num_qubits
-            continue
-
-        if processing_only:
-            active_qubits = {
-                q for gate_id in time_slices[slice_idx] for q in gate_info[gate_id].qubits
-            }
-        else:
-            active_qubits = None
-
-        counts = [[0] * num_pzs for _ in range(num_pzs)]
-        for sn in result.supernodes:
-            cluster = result.assignment[sn.id]
-            if cluster < 0 or cluster >= num_pzs:
-                continue
-            for q in sn.qubits:
-                if active_qubits is not None and q not in active_qubits:
-                    continue
-                prev = prev_qubit_assignment[q]
-                if 0 <= prev < num_pzs:
-                    counts[cluster][prev] += 1
-
-        best_perm = list(range(num_pzs))
-        best_score = sum(counts[i][best_perm[i]] for i in range(num_pzs))
-        for perm in itertools.permutations(range(num_pzs)):
-            score = sum(counts[i][perm[i]] for i in range(num_pzs))
-            if score > best_score:
-                best_score = score
-                best_perm = list(perm)
-
-        if best_perm != list(range(num_pzs)):
-            new_assignment = result.assignment.copy()
-            for sn in result.supernodes:
-                cluster = result.assignment[sn.id]
-                if 0 <= cluster < num_pzs:
-                    new_assignment[sn.id] = best_perm[cluster]
-            result.assignment = new_assignment
-
-        cluster_loads = [0] * num_pzs
-        for sn in result.supernodes:
-            cluster = result.assignment[sn.id]
-            if 0 <= cluster < num_pzs:
-                cluster_loads[cluster] += sn.load
-            for q in sn.qubits:
-                if active_qubits is not None and q not in active_qubits:
-                    continue
-                prev_qubit_assignment[q] = cluster
-        result.cluster_loads = cluster_loads
 
 
 def fgp_tabu(
@@ -237,6 +64,20 @@ def fgp_tabu(
     lookahead_slices: int | float = math.inf,
 ) -> FGPResult:
     """Public entry point mirroring compute_gate_partition but using tabu refinement."""
+
+    if DEBUG_FLAG:
+        print("=== FGP Tabu Parameters ===")
+        print(f"num_ions: {_infer_num_qubits(graph.gate_info)}")
+        print(f"num_pzs: {num_pzs}")
+        print(f"capacity: {capacity}")
+        print(f"sigma: {sigma}")
+        print(f"sigma_single: {sigma_single}")
+        print(f"balance_penalty: {balance_penalty}")
+        print(f"max_iterations: {max_iterations}")
+        print(f"tabu_list_length: {tabu_list_length}")
+        print(f"lookahead_weight_factor: {lookahead_weight_factor}")
+        print(f"lookahead_slices: {lookahead_slices}")
+        print()
 
     if not graph.sequence:
         gate_partition_by_pz = {pz.name: [] for pz in graph.pzs}
@@ -267,6 +108,38 @@ def fgp_tabu(
         lookahead_weight_factor=lookahead_weight_factor,
         lookahead_slices=lookahead_slices,
     )
+
+    if DEBUG_FLAG:
+        print("Overview:")
+        for idx, slice in enumerate(partition_output["slice_plan"]):
+            print(f"Slice {idx}", slice)
+        for idx, result in []: #enumerate(partition_output["partition_results"]):
+            print(f"\n=== Slice {idx} ===")
+            print(f"Gates in slice: {partition_output['time_slices'][idx]}")
+            
+            if result.assignment is not None:
+                print("\nQubit assignments by PZ:")
+                qubit_to_pz = {}
+                for sn in result.supernodes:
+                    pz = result.assignment[sn.id]
+                    for q in sn.qubits:
+                        qubit_to_pz[q] = pz
+                
+                for pz_idx in range(num_pzs):
+                    qubits_in_pz = sorted([q for q, p in qubit_to_pz.items() if p == pz_idx])
+                    print(f"  PZ{pz_idx}: {qubits_in_pz}")
+                
+                print("\nGate assignments by PZ:")
+                for pz_idx in range(num_pzs):
+                    gates_in_pz = []
+                    for gate_id in partition_output["time_slices"][idx]:
+                        gate_qubits = gate_info[gate_id].qubits
+                        if gate_qubits and qubit_to_pz.get(gate_qubits[0]) == pz_idx:
+                            gates_in_pz.append(gate_id)
+                    print(f"  PZ{pz_idx}: {gates_in_pz}")
+                
+                if result.cluster_loads:
+                    print(f"\nCluster loads: {result.cluster_loads}")
 
     assignments: list[list[int]] = partition_output["qubit_assignments"]  # type: ignore[assignment]
     slice_plan: list[SlicePlan] = partition_output["slice_plan"]  # type: ignore[assignment]
@@ -324,7 +197,7 @@ def partition_slice(
     assignment: list[int] | None = None
     cluster_loads: list[int] | None = None
     if num_pzs is not None:
-        # TODO: use previous partitioning as seed, to skip greedy partitioning?
+        # TODO: use previous partitioning as seed to skip greedy partitioning?
         assignment, cluster_loads = _greedy_initial_partition(
             supernodes,
             aggregated_lookahead_edges,
@@ -344,6 +217,15 @@ def partition_slice(
         cluster_loads=cluster_loads,
     )
 
+    if num_pzs is not None and assignment is not None:
+        result.pre_tabu_cost = _compute_cost(
+            result,
+            assignment,
+            num_pzs,
+            lookahead_weight_factor=lookahead_weight_factor,
+            balance_penalty=balance_penalty,
+        )
+
     # tabu search to optimized partitioning
     if num_pzs is not None and assignment is not None:
         result.assignment, result.cluster_loads = tabu_optimize_partition(
@@ -354,6 +236,16 @@ def partition_slice(
             max_iterations=max_iterations,
             tabu_list_length=tabu_list_length,
         )
+
+    if num_pzs is not None and result.assignment is not None:
+        result.post_tabu_cost = _compute_cost(
+            result,
+            result.assignment,
+            num_pzs,
+            lookahead_weight_factor=lookahead_weight_factor,
+            balance_penalty=balance_penalty,
+        )
+        
 
 
     return result
@@ -664,6 +556,191 @@ class _UnionFind:
         if rank_a == rank_b:
             self.rank[root_a] = rank_a + 1
         return True
+    
+
+
+def _run_fgp_tabu(
+    sequence: Sequence[int],
+    gate_info: dict[int, GateInfo],
+    *,
+    num_qubits: int,
+    num_pzs: int | None,
+    sigma_edges: float,
+    sigma_single: float | None,
+    
+    capacity: int | None,
+    pz_names: Sequence[str] | None,
+    enable_plots: bool = False,
+    output_dir: Path | None = Path("outputs/fgp_tabu"),
+    balance_penalty: float,
+    max_iterations: int = 50,
+    tabu_list_length: int = 20,
+    lookahead_weight_factor: float,
+    lookahead_slices: int | float,
+    align_processing_only: bool = False,
+
+) -> dict[str, object]:
+    """Core partition routine shared by CLI and API entry points."""
+
+    time_slices = _build_time_slices(sequence, gate_info, num_qubits)
+    partitioning_results: list[ContractionResult] = []
+    future_windows: list[Sequence[Sequence[int]]] = []
+
+
+    for idx, current_slice in enumerate(time_slices):
+        if lookahead_slices == math.inf:
+            future_slice_window = time_slices[idx + 1 :]
+        else:
+            future_slice_window = time_slices[idx + 1 : idx + 1 + int(lookahead_slices)]
+        future_windows.append(future_slice_window)
+
+        result = partition_slice(
+            gate_info,
+            current_slice,
+            future_slice_window,
+            num_qubits=num_qubits,
+            sigma_edges=sigma_edges,
+            sigma_single=sigma_single,
+            num_pzs=num_pzs,
+            max_iterations=max_iterations,
+            tabu_list_length=tabu_list_length,
+            balance_penalty=balance_penalty,
+            lookahead_weight_factor=lookahead_weight_factor,
+        )
+        partitioning_results.append(result)
+
+    pre_tabu_costs = [res.pre_tabu_cost for res in partitioning_results if res.pre_tabu_cost is not None]
+    post_tabu_costs = [res.post_tabu_cost for res in partitioning_results if res.post_tabu_cost is not None]
+    if DEBUG_FLAG:
+        print(f"Total improvement: {sum(pre_tabu_costs) - sum(post_tabu_costs):.4f} ({((sum(pre_tabu_costs) - sum(post_tabu_costs)) / sum(pre_tabu_costs) * 100) if sum(pre_tabu_costs) > 0 else 0.0:.2f}%)\n")
+
+    if num_pzs:
+        _align_clusters_to_previous(
+            partitioning_results,
+            time_slices,
+            gate_info,
+            num_qubits,
+            num_pzs,
+            processing_only=align_processing_only,
+        )
+
+    peeled_subslices: list[list[dict[str, object]] | None] = [None] * len(time_slices)
+    for idx, current_slice in enumerate(time_slices):
+        result = partitioning_results[idx]
+        if enable_plots and output_dir is not None:
+            plot_partition_outputs(
+                num_qubits,
+                result,
+                gate_info,
+                current_slice,
+                future_windows[idx],
+                output_dir,
+            )
+        if capacity and num_pzs:
+            capacities = [capacity] * num_pzs
+            subslices = peel_slice(result, gate_info, current_slice, capacities)
+            peeled_subslices[idx] = subslices
+
+    assignments: list[list[int]] = []
+    gate_partition_by_pz: dict[str, list[int]] = {}
+    gate_assignment: dict[int, str] = {}
+    slice_plans: list[SlicePlan] = []
+    if num_pzs:
+        resolved_pz_names = list(pz_names) if pz_names else [f"PZ{i}" for i in range(num_pzs)]
+        peeled_for_helper: Sequence[Sequence[dict[str, object]]] | None = None
+        if any(peeled_subslices):
+            peeled_for_helper = [
+                subslice if subslice is not None else []
+                for subslice in peeled_subslices
+            ]
+        (
+            assignments,
+            slice_plans,
+            gate_partition_by_pz,
+            gate_assignment,
+        ) = _build_slice_plans_from_results(
+            partitioning_results,
+            time_slices,
+            gate_info,
+            resolved_pz_names,
+            num_qubits=num_qubits,
+            peeled_subslices=peeled_for_helper,
+        )
+
+    return {
+        "partition_results": partitioning_results,
+        "qubit_assignments": assignments,
+        "gate_partition_by_pz": gate_partition_by_pz,
+        "gate_assignment": gate_assignment,
+        "slice_plan": slice_plans,
+        "peeled_subslices": [
+            subslice if subslice is not None else [] for subslice in peeled_subslices
+        ],
+        "time_slices": time_slices,
+    }
+
+
+def _align_clusters_to_previous(
+    partitioning_results: Sequence[ContractionResult],
+    time_slices: Sequence[Sequence[int]],
+    gate_info: dict[int, GateInfo],
+    num_qubits: int,
+    num_pzs: int,
+    *,
+    processing_only: bool = False,
+) -> None:
+    prev_qubit_assignment = [-1] * num_qubits
+
+    for slice_idx, result in enumerate(partitioning_results):
+        if result.assignment is None:
+            prev_qubit_assignment = [-1] * num_qubits
+            continue
+
+        if processing_only:
+            active_qubits = {
+                q for gate_id in time_slices[slice_idx] for q in gate_info[gate_id].qubits
+            }
+        else:
+            active_qubits = None
+
+        counts = [[0] * num_pzs for _ in range(num_pzs)]
+        for sn in result.supernodes:
+            cluster = result.assignment[sn.id]
+            if cluster < 0 or cluster >= num_pzs:
+                continue
+            for q in sn.qubits:
+                if active_qubits is not None and q not in active_qubits:
+                    continue
+                prev = prev_qubit_assignment[q]
+                if 0 <= prev < num_pzs:
+                    counts[cluster][prev] += 1
+
+        best_perm = list(range(num_pzs))
+        best_score = sum(counts[i][best_perm[i]] for i in range(num_pzs))
+        for perm in itertools.permutations(range(num_pzs)):
+            score = sum(counts[i][perm[i]] for i in range(num_pzs))
+            if score > best_score:
+                best_score = score
+                best_perm = list(perm)
+
+        if best_perm != list(range(num_pzs)):
+            new_assignment = result.assignment.copy()
+            for sn in result.supernodes:
+                cluster = result.assignment[sn.id]
+                if 0 <= cluster < num_pzs:
+                    new_assignment[sn.id] = best_perm[cluster]
+            result.assignment = new_assignment
+
+        cluster_loads = [0] * num_pzs
+        for sn in result.supernodes:
+            cluster = result.assignment[sn.id]
+            if 0 <= cluster < num_pzs:
+                cluster_loads[cluster] += sn.load
+            for q in sn.qubits:
+                if active_qubits is not None and q not in active_qubits:
+                    continue
+                prev_qubit_assignment[q] = cluster
+        result.cluster_loads = cluster_loads
 
 
 def _load_gate_metadata(qasm_path: Path) -> tuple[list[int], dict[int, GateInfo]]:

@@ -1,10 +1,10 @@
 {
   "arch": [3, 3, 1, 1],
   "num_pzs": 2,
-  "max_ions_per_pz" : 2,
+  "max_ions_per_pz" : 3,
   "seed": 0,
-  "algorithm_name": "development",
-  "num_ions": 10,
+  "algorithm_name": "grover-noancilla_indep_tket",
+  "num_ions": 8,
   "qasm_base_dir": "inputs/qasm_files",
   "use_dag": true,
   "use_paths": false,
@@ -13,6 +13,6 @@
   "save": false,
   "debug_gate_tracking": false,
   "failing_junctions": 0,
-  "gate_partition_algorithm": {"name": "fgp_tabu", "params": {"balance_penalty" : 1, "max_iterations": 10000, "tabu_list_length": 1000, "sigma": 0.1, "lookahead_weight_factor": 1}},
+  "gate_partition_algorithm": {"name": "fgp_tabu", "params": {"balance_penalty" : 0.3, "max_iterations": 50, "tabu_list_length": 20, "sigma": 1.8, "lookahead_weight_factor": 1}},
   "enforce_slice_plan": true
 }

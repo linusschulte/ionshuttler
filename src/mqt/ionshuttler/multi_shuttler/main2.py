@@ -8,6 +8,7 @@ import tempfile
 from datetime import datetime, timedelta
 from itertools import product
 from typing import Any
+from qiskit import QuantumCircuit
 
 import h5py
 import numpy as np
@@ -196,6 +197,16 @@ def main(config: dict[str, Any]):
     graph.debug_gate_tracking = debug_gate_tracking
 
     qasm_file_path = qasm_base_dir / algorithm_name / f"{algorithm_name}_{num_ions}.qasm"
+    # Parse and plot the circuit using Qiskit
+
+    try:
+        if plot_flag:
+            qc = QuantumCircuit.from_qasm_file(str(qasm_file_path))
+            qc.draw(output = "mpl", filename=f"outputs/circuits/{algorithm_name}_{num_ions}_circuit.png")
+    except ImportError:
+        print("Warning: qiskit not installed, skipping circuit visualization")
+    except Exception as e:
+        print(f"Warning: Could not visualize circuit: {e}")
 
     if not qasm_file_path.is_file():
         print(f"Error: QASM file not found at {qasm_file_path}")
@@ -373,6 +384,7 @@ def main(config: dict[str, Any]):
                 raise ValueError(msg)
             from outside.tdag import compute_gate_partition_tdag
 
+
             max_qubits = algo_params.get("k", 4)
             tdag_result = compute_gate_partition_tdag(
                 graph,
@@ -510,26 +522,26 @@ if __name__ == "__main__":
     meta_study_config = {
         # Core architecture parameters
         'num_ions': [8],
-        'num_pzs': [2],
+        'num_pzs': [3],
         'ions_per_pz': [2],
         'grid_size': [3],
         'mz_trap_size': [1],
-        'use_dag': [True],
+        'use_dag': [False],
         'enforce_slice_plan': [True],
         
         # Partitioning algorithm configurations
         'partitioning_algorithms': [
-            {'name': 'none'},  # No partitioning
+            #{'name': 'none'},  # No partitioning
             {
                 'name': 'fgp_tabu',
                 'params': {
-                    'lookahead_weight_factor': [0.1, 0.5, 1.0, 2.0],
-                    'balance_penalty': [0.1, 0.5, 1.0, 2.0],
-                    'sigma': [0.1, 0.5, 1.0, 2.0],
+                    #'lookahead_weight_factor': [0.1, 0.5, 1.0, 2.0],
+                    'balance_penalty':  [0.1, 2.0], #[0.19],
+                    'sigma':   [0.1, 2.0], #[1.88],
                 },
                 'sampling': {
                     'method': 'lhs',
-                    'num_samples': 100,
+                    'num_samples': 30,
                 },
             },
         ]
@@ -553,7 +565,7 @@ if __name__ == "__main__":
             
             # Skip 'none' partitioning if enforce_slice_plan is True
             if algo_name == 'none' and base_dict.get('enforce_slice_plan', False):
-                continue
+                base_dict['enforce_slice_plan'] = False
             
             if algo_name == 'none':
                 # No algorithm parameters to expand
@@ -667,7 +679,7 @@ if __name__ == "__main__":
                     "params": algo_params
                 }
             
-            print(f"\n=== Run {result_index + 1} / {total_combinations} (New) ===")
+            print(f"\n=== Run {result_index - existing_runs + 1} / {total_combinations} (New) ===")
             #print(f"Config: {run_params}")
             
             run_name = f'run_{result_index:04d}'
