@@ -86,7 +86,7 @@ def build_plot_annotations(graph: Graph, in_process_ions: list[int], processed_g
         if qubits and in_process_set and all(q in in_process_set for q in qubits):
             progress_parts.append(f"{gate_id}: {qasm}")
     title_text = f"{slice_note}Current gates by PZ: " + "; ".join(title_parts)
-    xlabel_text = "Gates in progress: " + "; ".join(progress_parts) + ". Gates complete: " + ", ".join(map(str, processed_gates))
+    xlabel_text = "Gates in progress: " + "; ".join(progress_parts) + f". Gates complete ({len(processed_gates)}): " + ", ".join(map(str, processed_gates))
 
     return title_text, xlabel_text
 
@@ -422,6 +422,7 @@ def main(
         next_processable_gate_nodes = get_all_first_gates_and_update_sequence_non_destructive(graph, dag)
 
     locked_gates: dict[int, str] = {}
+    process_gates_counter = [0] 
     while timestep < max_timesteps:
         if timestep % 10 == 0:
             print(f"\rTimestep: {timestep}/{int(max_timesteps)}", end="", flush=True)
@@ -624,6 +625,7 @@ def main(
                         raise ValueError(msg)
                 previous_gate_processed = gate_processed
         gates_processed.extend(processed_gate_ids)
+        process_gates_counter.append(process_gates_counter[-1]+len(processed_gate_ids))
 
         # Remove processed ions from the sequence (and dag if use_dag)
         if plan_active and current_plan is not None:
@@ -658,4 +660,4 @@ def main(
 
     print(f"\rTimestep: {timestep}/{int(max_timesteps)}", end="", flush=True)
 
-    return timestep
+    return timestep, process_gates_counter

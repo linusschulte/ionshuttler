@@ -9,13 +9,14 @@ import itertools
 import numpy as np
 from scipy.spatial import ConvexHull
 import matplotlib.patches as patches
+import shutil
 
 from .compilation import create_initial_sequence
 from .fgp_roee import FGPResult, _build_time_slices
 from .graph import Graph
 from .types import GateInfo, SlicePlan
 
-DEBUG_FLAG = 0
+DEBUG_FLAG = 1
 
 @dataclass(slots=True)
 class Supernode:
@@ -112,9 +113,9 @@ def fgp_tabu(
     if DEBUG_FLAG:
         print("Overview:")
         for idx, slice in enumerate(partition_output["slice_plan"]):
-            print(f"Slice {idx}", slice)
+            print(f"Slice {idx+1}", slice)
         for idx, result in []: #enumerate(partition_output["partition_results"]):
-            print(f"\n=== Slice {idx} ===")
+            print(f"\n=== Slice {idx+1} ===")
             print(f"Gates in slice: {partition_output['time_slices'][idx]}")
             
             if result.assignment is not None:
@@ -625,6 +626,13 @@ def _run_fgp_tabu(
         )
 
     peeled_subslices: list[list[dict[str, object]] | None] = [None] * len(time_slices)
+
+    if enable_plots and output_dir is not None:
+        # Clear the entire output directory before generating new plots
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
     for idx, current_slice in enumerate(time_slices):
         result = partitioning_results[idx]
         if enable_plots and output_dir is not None:

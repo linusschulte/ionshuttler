@@ -432,7 +432,7 @@ def main(config: dict[str, Any]):
     print("\nStarted shuttling simulation...")
 
     # Run the main shuttling logic
-    final_timesteps = run_shuttle_main(
+    final_timesteps, processed_gates_counter = run_shuttle_main(
         graph,
         dag,
         cycle_or_paths_str,
@@ -448,8 +448,9 @@ def main(config: dict[str, Any]):
 
     print(f"\nSimulation finished in {final_timesteps} timesteps.")
     print(f"Total CPU time: {cpu_time}")
+    print(f"processed_gates_counter", processed_gates_counter)
 
-    return final_timesteps, cpu_time
+    return final_timesteps, cpu_time, processed_gates_counter
 
 
 def execute_run(config: dict[str, Any]) -> tuple[int, timedelta]:
@@ -521,10 +522,10 @@ if __name__ == "__main__":
     # Meta study configuration
     meta_study_config = {
         # Core architecture parameters
-        'num_ions': [8],
-        'num_pzs': [3],
-        'ions_per_pz': [2],
-        'grid_size': [3],
+        'num_ions': [6,8,10,15,20],
+        'num_pzs': [2,3,4],
+        'ions_per_pz': [3,4,5],
+        'grid_size': [4],
         'mz_trap_size': [1],
         'use_dag': [False],
         'enforce_slice_plan': [True],
@@ -536,15 +537,16 @@ if __name__ == "__main__":
                 'name': 'fgp_tabu',
                 'params': {
                     #'lookahead_weight_factor': [0.1, 0.5, 1.0, 2.0],
-                    'balance_penalty':  [0.1, 2.0], #[0.19],
-                    'sigma':   [0.1, 2.0], #[1.88],
+                    'balance_penalty':  [1.75], #[0.19],
+                    'sigma':   [1.5], #[1.88],
                 },
                 'sampling': {
                     'method': 'lhs',
-                    'num_samples': 30,
+                    'num_samples': 20,
                 },
             },
-        ]
+        ],
+        'partitioning_algorithms': [{'name': 'none'}],
     }
     
     # Generate all valid combinations
