@@ -134,3 +134,6 @@ inputs/qasm_files/random_nativegates_ibm_tket/random_nativegates_ibm_tket_23.qas
 inputs/qasm_files/random_nativegates_ibm_tket/random_nativegates_ibm_tket_24.qasm
 inputs/qasm_files/random_nativegates_ibm_tket/random_nativegates_ibm_tket_25.qasm
 notebooks/sandbox.ipynb
+inputs/algorithms_heuristic/test.json
+notebooks/partitioning_comparison.ipynb
+inputs/algorithms_heuristic/test.json

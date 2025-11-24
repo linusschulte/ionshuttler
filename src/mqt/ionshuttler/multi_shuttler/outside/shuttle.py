@@ -422,7 +422,7 @@ def main(
         next_processable_gate_nodes = get_all_first_gates_and_update_sequence_non_destructive(graph, dag)
 
     locked_gates: dict[int, str] = {}
-    process_gates_counter = [0] 
+    processed_gate_counter = [0] 
     while timestep < max_timesteps:
         if timestep % 10 == 0:
             print(f"\rTimestep: {timestep}/{int(max_timesteps)}", end="", flush=True)
@@ -572,6 +572,8 @@ def main(
                     msg = "Invalid gate format"
                     raise ValueError(msg)
             gates_processed.extend([gate_id_lookup.get(gate_node.node_id) for gate_node in processed_nodes.values()])
+            processed_gate_counter.append(processed_gate_counter[-1]+len(processed_nodes))
+
 
         else:
             previous_gate_processed = True
@@ -624,8 +626,12 @@ def main(
                         msg = "Invalid gate format"
                         raise ValueError(msg)
                 previous_gate_processed = gate_processed
+            processed_gate_counter.append(processed_gate_counter[-1]+len(processed_gate_ids))
+
         gates_processed.extend(processed_gate_ids)
-        process_gates_counter.append(process_gates_counter[-1]+len(processed_gate_ids))
+
+
+        
 
         # Remove processed ions from the sequence (and dag if use_dag)
         if plan_active and current_plan is not None:
@@ -660,4 +666,4 @@ def main(
 
     print(f"\rTimestep: {timestep}/{int(max_timesteps)}", end="", flush=True)
 
-    return timestep, process_gates_counter
+    return timestep#, processed_gate_counter
