@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import pathlib
 from collections import Counter, OrderedDict
 from datetime import datetime
@@ -24,7 +25,7 @@ from .scheduling import (
     update_entry_and_exit_cycles,
 )
 
-DEBUG_FLAG = 0
+DEBUG_FLAG = bool(int(os.getenv("IONSHUTTLER_DEBUG_SHUTTLE", "0")))
 
 if TYPE_CHECKING:
     from qiskit.dagcircuit import DAGDependency
@@ -45,8 +46,6 @@ def check_duplicates(graph: Graph) -> None:
         edge_idc = get_idc_from_idx(graph.idc_dict, idx)
         if graph.get_edge_data(edge_idc[0], edge_idc[1])["edge_type"] != "parking_edge" and count > 1:
             message = f"More than one ion in edge {edge_idc}, arch: {graph.arch}, circuit depth: {len(graph.sequence)}, seed: {graph.seed}!"
-            print("Last state:")
-            print(graph.state)
             raise AssertionError(message)
 
         if (

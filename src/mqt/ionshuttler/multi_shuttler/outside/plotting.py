@@ -99,7 +99,7 @@ def plot_state(
         ions = nx.get_edge_attributes(graph, "ions")
         edge_types = nx.get_edge_attributes(graph, "edge_type")
         for edge, label in ions.items():
-            display = f"{label} ({edge_types.get(edge, 'unknown')})"
+            display = f"{label} ("+ f"{edge_types.get(edge, 'unknown')[:4]}" +")"
             (x1, y1), (x2, y2) = pos[edge[0]], pos[edge[1]]
             if abs(x1 - x2) < 1e-9:
                 edge_labels_vertical[edge] = display

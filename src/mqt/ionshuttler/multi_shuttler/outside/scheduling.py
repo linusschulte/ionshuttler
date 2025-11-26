@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 from collections import OrderedDict, defaultdict
 from typing import TYPE_CHECKING
 
@@ -31,6 +32,8 @@ if TYPE_CHECKING:
     from .graph import Graph
     from .processing_zone import ProcessingZone
     from .types import Edge, Node
+
+DEBUG_FLAG = bool(int(os.getenv("IONSHUTTLER_DEBUG_SCHEDULING", "0")))
 
 
 def preprocess(graph: Graph, priority_queue: dict[int, str]) -> None:
@@ -592,6 +595,9 @@ def find_movable_cycles(
                 break
         if nonfree is False:
             free_cycle_seq_idxs.append(seq_cyc)
+
+    if DEBUG_FLAG:
+        print("FREE CYCLES:", free_cycle_seq_idxs)
 
     return free_cycle_seq_idxs
 

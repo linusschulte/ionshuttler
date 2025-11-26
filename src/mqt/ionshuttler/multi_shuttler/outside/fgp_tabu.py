@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import itertools
+import math
+import os
+import shutil
 from collections import defaultdict
 from dataclasses import dataclass
-import math
 from pathlib import Path
 from typing import Iterable, Sequence
-import itertools
+
+import matplotlib.patches as patches
 import numpy as np
 from scipy.spatial import ConvexHull
-import matplotlib.patches as patches
-import shutil
 
 from .compilation import create_initial_sequence
 from .fgp_roee import FGPResult, _build_time_slices
@@ -17,7 +19,7 @@ from .graph import Graph
 from .processing_zone import ProcessingZone
 from .types import GateInfo, SlicePlan
 
-DEBUG_FLAG = 0
+DEBUG_FLAG = bool(int(os.getenv("IONSHUTTLER_DEBUG_FGP_TABU", "0")))
 
 @dataclass(slots=True)
 class Supernode:

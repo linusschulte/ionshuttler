@@ -28,7 +28,7 @@ from outside.partition import get_partition
 from outside.processing_zone import ProcessingZone
 from outside.shuttle import main as run_shuttle_main
 
-from outside.helper import generate_pzs
+from outside.helper import generate_pzs, recalculate_architecture_config
 
 LEGACY_CLI_COMMAND = "mqt-ionshuttler-heuristic"
 _SIM_TIMESTEPS_RE = re.compile(r"Simulation finished in\s+(?P<value>\d+)\s+timesteps")
@@ -425,8 +425,8 @@ def main(config: dict[str, Any]):
     end_time = datetime.now()
     cpu_time = end_time - start_time
 
-    print(f"\nSimulation finished in {final_timesteps} timesteps.")
-    print(f"Total CPU time: {cpu_time}")
+    #print(f"\nSimulation finished in {final_timesteps} timesteps.")
+    #print(f"Total CPU time: {cpu_time}")
     #print(f"processed_gates_counter", processed_gates_counter)
 
     return final_timesteps, cpu_time#, processed_gates_counter
@@ -505,12 +505,14 @@ if __name__ == "__main__":
         return False
     
     # Meta study configuration
-    unique_id = "PZ_sweep"
-    
+    clear_prev = False
+    unique_id = "num_pz_sweep_20ions_4411_cap3"
+    #unique_id = ""
+
     meta_study_config = {
         # Core architecture parameters
         'num_ions': [20],
-        'num_pzs': [4,6,8,10,12],
+        'num_pzs': [4,5,6,7,8,9,10,11,12],
         'ions_per_pz': [3],
         'grid_size': [4],
         'mz_trap_size': [1],
@@ -541,6 +543,11 @@ if __name__ == "__main__":
     if unique_id != "":
         #stamp = datetime.now().strftime("%Y%m%d_%H")
         results_file = f"outputs/results/simulation_results_{config['algorithm_name']}_{unique_id}.h5"
+
+    # Clear previous results if requested
+    if clear_prev and pathlib.Path(results_file).exists():
+        print(f"Removing existing results file: {results_file}")
+        pathlib.Path(results_file).unlink()
 
     # Generate all valid combinations
     valid_combinations = []

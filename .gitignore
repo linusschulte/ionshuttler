@@ -41,3 +41,5 @@ notebooks/sandbox.ipynb
 notebooks/partitioning_comparison.ipynb
 
 notebooks/modify_qasm.ipynb
+debug.env
+src/mqt/ionshuttler/multi_shuttler/main3.py

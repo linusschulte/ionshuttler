@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import random
 from typing import TYPE_CHECKING
 
@@ -7,6 +8,8 @@ import networkx as nx
 from more_itertools import distinct_combinations, pairwise
 
 from .graph_utils import get_idx_from_idc
+
+DEBUG_FLAG = bool(int(os.getenv("IONSHUTTLER_DEBUG_CYCLES", "0")))
 
 if TYPE_CHECKING:
     from .graph import Graph
@@ -391,9 +394,12 @@ def find_conflict_cycle_idxs(graph: Graph, cycles_dict: dict[int, list[Edge]]) -
                 middle_node_type = nx.get_node_attributes(graph, "node_type")[cycles_dict[cycle][0][1]]
                 start_node_type = nx.get_node_attributes(graph, "node_type")[cycles_dict[cycle][0][0]]
                 end_node_type = nx.get_node_attributes(graph, "node_type")[cycles_dict[cycle][1][1]]
-                #print("start_node_type:", start_node_type)
-                #print("middle_node_type:", middle_node_type)
-                #print("end_node_type:", end_node_type)
+                
+                if DEBUG_FLAG:
+                    print("CYCLE:", cycles_dict[cycle])
+                    print("start_node_type:", start_node_type)
+                    print("middle_node_type:", middle_node_type)
+                    print("end_node_type:", end_node_type)
                 if ( # going into processing zone
                     middle_node_type in {"exit_connection_node"}
                     and (start_node_type in {"processing_zone_node"} and end_node_type not in {"processing_zone_node"} )
@@ -426,6 +432,12 @@ def find_conflict_cycle_idxs(graph: Graph, cycles_dict: dict[int, list[Edge]]) -
             else:
                 nodes.add(node1)
                 nodes.add(node2)
+        if not nodes:
+            node_types = nx.get_node_attributes(graph, "node_type")
+            for edge in cycles_dict[cycle]:
+                for node in edge:
+                    if node_types.get(node) != "processing_zone_node":
+                        nodes.add(node)
         return nodes
 
     junction_shared_pairs = []
@@ -433,10 +445,11 @@ def find_conflict_cycle_idxs(graph: Graph, cycles_dict: dict[int, list[Edge]]) -
         nodes1 = get_cycle_nodes(cycle1, graph)
         nodes2 = get_cycle_nodes(cycle2, graph)
 
-        #print(cycles_dict)
-        #print("comparing:")
-        #print(f"cylce {cycle1}:", nodes1)
-        #print(f"cycle {cycle2}:", nodes2)
+        if DEBUG_FLAG:
+            print(dict(sorted(cycles_dict.items())))
+            print("comparing:")
+            print(f"cylce {cycle1}:", nodes1)
+            print(f"cycle {cycle2}:", nodes2)
 
         # new: exclude processing zone node -> if pz node in circles -> can both be executed (TODO check again for moves out of pz)
         # extra: if both end in same edge -> don't execute (scenario where path out of pz ends in same edge as next edge for other)
@@ -448,6 +461,7 @@ def find_conflict_cycle_idxs(graph: Graph, cycles_dict: dict[int, list[Edge]]) -
         ):
             # also exclude cases in which a stop move would block a junction (should only block moves into stop move, but not the whole junction)
             # -> do not append if cycle1 is stop move and cycle2 does not move into stop move and vice versa
+            
             if not (
                 (
                     get_idx_from_idc(graph.idc_dict, cycles_dict[cycle1][0])

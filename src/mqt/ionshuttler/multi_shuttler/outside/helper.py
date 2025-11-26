@@ -94,3 +94,14 @@ def generate_pzs(num_pzs, m, n, v, h, height = -1):
 
 
     return pz_definitions
+
+
+def recalculate_architecture_config(meta_study_config: dict, population_density: float) -> dict:
+    #if "num_ions" in meta_study_config and "grid_size" in meta_study_config:
+    #    new_num_ions_list = []
+    #    for grid_size in meta_study_config["grid_size"]:
+    #        for mz_trap_size in meta_study_config.get("mz_trap_size", [1]):
+    #            max_ions = int((2*grid_size * (grid_size-1) * mz_trap_size) * population_density)
+    #            new_num_ions_list.extend([num_ions for num_ions in meta_study_config["num_ions"] if num_ions <= max_ions])
+    #    meta_study_config["num_ions"] = list(set(new_num_ions_list))  # Remove duplicates
+    return meta_study_config
