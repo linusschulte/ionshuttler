@@ -14,6 +14,7 @@ import shutil
 from .compilation import create_initial_sequence
 from .fgp_roee import FGPResult, _build_time_slices
 from .graph import Graph
+from .processing_zone import ProcessingZone
 from .types import GateInfo, SlicePlan
 
 DEBUG_FLAG = 0
@@ -63,6 +64,7 @@ def fgp_tabu(
     tabu_list_length: int = 20,
     lookahead_weight_factor: float = 1.0,
     lookahead_slices: int | float = math.inf,
+    distance_weight_factor: float = 0.0,
 ) -> FGPResult:
     """Public entry point mirroring compute_gate_partition but using tabu refinement."""
 
@@ -78,6 +80,7 @@ def fgp_tabu(
         print(f"tabu_list_length: {tabu_list_length}")
         print(f"lookahead_weight_factor: {lookahead_weight_factor}")
         print(f"lookahead_slices: {lookahead_slices}")
+        print(f"distance_weight_factor: {distance_weight_factor}")
         print()
 
     if not graph.sequence:
@@ -93,6 +96,9 @@ def fgp_tabu(
     num_qubits = _infer_num_qubits(gate_info)
     capacity = max(capacity or math.ceil(num_qubits / num_pzs), 1)
     pz_names = [pz.name for pz in graph.pzs]
+    pz_positions: Sequence[ProcessingZone | None] = [graph.pzs_name_map.get(name) for name in pz_names]
+
+    
 
     partition_output = _run_fgp_tabu(
         graph.sequence,
@@ -108,6 +114,8 @@ def fgp_tabu(
         balance_penalty=balance_penalty,
         lookahead_weight_factor=lookahead_weight_factor,
         lookahead_slices=lookahead_slices,
+        distance_weight_factor=distance_weight_factor,
+        pz_positions=pz_positions,
     )
 
     if DEBUG_FLAG:
@@ -165,6 +173,9 @@ def partition_slice(
     max_iterations: int = 50,
     tabu_list_length: int = 20,
     lookahead_weight_factor: float = 1.0,
+    previous_qubit_assignment: list[int] | None = None,
+    pz_positions: Sequence[ProcessingZone | None] | None = None,
+    distance_weight_factor: float = 0.0,
 ) -> ContractionResult:
     """Contract the slice graph and produce a greedy initial assignment."""
 
@@ -197,8 +208,14 @@ def partition_slice(
     # greedy initial partitioning
     assignment: list[int] | None = None
     cluster_loads: list[int] | None = None
-    if num_pzs is not None:
-        # TODO: use previous partitioning as seed to skip greedy partitioning?
+    if previous_qubit_assignment is not None:
+        assignment, cluster_loads = _seed_assignment_from_previous(
+            supernodes,
+            previous_qubit_assignment,
+            num_pzs,
+        )
+
+    if assignment is None:
         assignment, cluster_loads = _greedy_initial_partition(
             supernodes,
             aggregated_lookahead_edges,
@@ -218,17 +235,20 @@ def partition_slice(
         cluster_loads=cluster_loads,
     )
 
-    if num_pzs is not None and assignment is not None:
+    if assignment is not None:
         result.pre_tabu_cost = _compute_cost(
             result,
             assignment,
             num_pzs,
             lookahead_weight_factor=lookahead_weight_factor,
             balance_penalty=balance_penalty,
+            pz_positions=pz_positions,
+            previous_qubit_assignment=previous_qubit_assignment,
+            distance_weight_factor=distance_weight_factor,
         )
 
     # tabu search to optimized partitioning
-    if num_pzs is not None and assignment is not None:
+    if assignment is not None:
         result.assignment, result.cluster_loads = tabu_optimize_partition(
             result,
             num_pzs,
@@ -236,20 +256,25 @@ def partition_slice(
             balance_penalty=balance_penalty,
             max_iterations=max_iterations,
             tabu_list_length=tabu_list_length,
+            pz_positions=pz_positions,
+            previous_qubit_assignment=previous_qubit_assignment,
+            distance_weight_factor=distance_weight_factor,
         )
 
-    if num_pzs is not None and result.assignment is not None:
+    if result.assignment is not None:
         result.post_tabu_cost = _compute_cost(
             result,
             result.assignment,
             num_pzs,
             lookahead_weight_factor=lookahead_weight_factor,
             balance_penalty=balance_penalty,
+            pz_positions=pz_positions,
+            previous_qubit_assignment=previous_qubit_assignment,
+            distance_weight_factor=distance_weight_factor,
         )
         
-
-
     return result
+
 
 def tabu_optimize_partition(
     result: ContractionResult,
@@ -259,6 +284,9 @@ def tabu_optimize_partition(
     tabu_list_length: int = 20,
     lookahead_weight_factor: float = 1.0,
     balance_penalty: float = 0.1,
+    pz_positions: Sequence[ProcessingZone | None] | None = None,
+    previous_qubit_assignment: list[int] | None = None,
+    distance_weight_factor: float = 0.0,
 ) -> tuple[list[int], list[int]]:
     if result.assignment is None:
         raise ValueError("Refinement requires an initial assignment.")
@@ -270,6 +298,9 @@ def tabu_optimize_partition(
         num_pzs,
         lookahead_weight_factor=lookahead_weight_factor,
         balance_penalty=balance_penalty,
+        pz_positions=pz_positions,
+        previous_qubit_assignment=previous_qubit_assignment,
+        distance_weight_factor=distance_weight_factor,
     )
     tabu_list: list[tuple[int, int]] = []
 
@@ -280,6 +311,9 @@ def tabu_optimize_partition(
             num_pzs,
             lookahead_weight_factor=lookahead_weight_factor,
             balance_penalty=balance_penalty,
+            pz_positions=pz_positions,
+            previous_qubit_assignment=previous_qubit_assignment,
+            distance_weight_factor=distance_weight_factor,
         )
         best_move = None
         best_move_cost = current_cost
@@ -300,6 +334,9 @@ def tabu_optimize_partition(
                     num_pzs,
                     lookahead_weight_factor=lookahead_weight_factor,
                     balance_penalty=balance_penalty,
+                    pz_positions=pz_positions,
+                    previous_qubit_assignment=previous_qubit_assignment,
+                    distance_weight_factor=distance_weight_factor,
                 )
                 if cost < best_move_cost:
                     best_move_cost = cost
@@ -464,6 +501,24 @@ def _compute_moves(assignments: list[list[int]]) -> list[list[tuple[int, int, in
     return moves
 
 
+def _build_qubit_assignment(
+    result: ContractionResult,
+    num_qubits: int,
+    num_clusters: int,
+) -> list[int] | None:
+    if result.assignment is None:
+        return None
+    qubit_assignment = [-1] * num_qubits
+    for sn in result.supernodes:
+        cluster = result.assignment[sn.id]
+        if cluster < 0 or cluster >= num_clusters:
+            continue
+        for q in sn.qubits:
+            if 0 <= q < num_qubits:
+                qubit_assignment[q] = cluster
+    return qubit_assignment
+
+
 def plot_partition_outputs(
     num_qubits: int,
     result: ContractionResult,
@@ -578,7 +633,8 @@ def _run_fgp_tabu(
     tabu_list_length: int = 20,
     lookahead_weight_factor: float,
     lookahead_slices: int | float,
-    align_processing_only: bool = False,
+    distance_weight_factor: float = 0.0,
+    pz_positions: Sequence[ProcessingZone | None] | None = None,
 
 ) -> dict[str, object]:
     """Core partition routine shared by CLI and API entry points."""
@@ -586,6 +642,7 @@ def _run_fgp_tabu(
     time_slices = _build_time_slices(sequence, gate_info, num_qubits)
     partitioning_results: list[ContractionResult] = []
     future_windows: list[Sequence[Sequence[int]]] = []
+    prev_qubit_assignment: list[int] | None = None
 
 
     for idx, current_slice in enumerate(time_slices):
@@ -607,23 +664,18 @@ def _run_fgp_tabu(
             tabu_list_length=tabu_list_length,
             balance_penalty=balance_penalty,
             lookahead_weight_factor=lookahead_weight_factor,
+            previous_qubit_assignment=prev_qubit_assignment,
+            pz_positions=pz_positions,
+            distance_weight_factor=distance_weight_factor,
         )
         partitioning_results.append(result)
+        if num_pzs:
+            prev_qubit_assignment = _build_qubit_assignment(result, num_qubits, num_pzs)
 
     pre_tabu_costs = [res.pre_tabu_cost for res in partitioning_results if res.pre_tabu_cost is not None]
     post_tabu_costs = [res.post_tabu_cost for res in partitioning_results if res.post_tabu_cost is not None]
     if DEBUG_FLAG:
         print(f"Total improvement: {sum(pre_tabu_costs) - sum(post_tabu_costs):.4f} ({((sum(pre_tabu_costs) - sum(post_tabu_costs)) / sum(pre_tabu_costs) * 100) if sum(pre_tabu_costs) > 0 else 0.0:.2f}%)\n")
-
-    if num_pzs:
-        _align_clusters_to_previous(
-            partitioning_results,
-            time_slices,
-            gate_info,
-            num_qubits,
-            num_pzs,
-            processing_only=align_processing_only,
-        )
 
     peeled_subslices: list[list[dict[str, object]] | None] = [None] * len(time_slices)
 
@@ -872,6 +924,32 @@ def _aggregate_lookahead_edges(
     return aggregated
 
 
+def _seed_assignment_from_previous(
+    supernodes: list[Supernode],
+    previous_qubit_assignment: list[int],
+    num_pzs: int,
+) -> tuple[list[int] | None, list[int] | None]:
+    if not previous_qubit_assignment:
+        return None, None
+
+    assignment = [-1] * len(supernodes)
+    cluster_loads = [0] * num_pzs
+
+    for sn in supernodes:
+        prev_clusters: dict[int, int] = defaultdict(int)
+        for q in sn.qubits:
+            prev_cluster = previous_qubit_assignment[q] if 0 <= q < len(previous_qubit_assignment) else -1
+            if 0 <= prev_cluster < num_pzs:
+                prev_clusters[prev_cluster] += 1
+        if not prev_clusters:
+            return None, None
+        target_cluster = max(prev_clusters.items(), key=lambda kv: kv[1])[0]
+        assignment[sn.id] = target_cluster
+        cluster_loads[target_cluster] += sn.load
+
+    return assignment, cluster_loads
+
+
 def _greedy_initial_partition(
     supernodes: list[Supernode],
     lookahead_edges: dict[tuple[int, int], float],
@@ -927,6 +1005,9 @@ def _compute_cost(
     *,
     lookahead_weight_factor: float = 1.0, # relative weight of lookahead vs current slice
     balance_penalty: float = 0.5,
+    pz_positions: Sequence[ProcessingZone | None] | None = None,
+    previous_qubit_assignment: list[int] | None = None,
+    distance_weight_factor: float = 0.0,
 ) -> float:
     if len(assignment) != len(result.supernodes):
         raise ValueError("Assignment length mismatch.")
@@ -980,7 +1061,29 @@ def _compute_cost(
     total_lookahead_weight = sum(result.lookahead_edges.values())
     lookahead_cut_penalty_norm = lookahead_cut_penalty / max(total_lookahead_weight, 1e-9)
 
-    return lookahead_cut_penalty_norm * lookahead_weight_factor + balance_penalty * (var_required + var_lookahead *lookahead_weight_factor)
+    distance_penalty = 0.0
+    if distance_weight_factor and previous_qubit_assignment and pz_positions:
+        total_distance = 0.0
+        counted = 0
+        for qubit, supernode in result.qubit_to_supernode.items():
+            prev_cluster = previous_qubit_assignment[qubit] if 0 <= qubit < len(previous_qubit_assignment) else -1
+            curr_cluster = assignment[supernode]
+            if not (0 <= prev_cluster < num_pzs and 0 <= curr_cluster < num_pzs):
+                continue
+            prev_pz = pz_positions[prev_cluster] if prev_cluster < len(pz_positions) else None
+            curr_pz = pz_positions[curr_cluster] if curr_cluster < len(pz_positions) else None
+            if prev_pz is None or curr_pz is None:
+                continue
+            total_distance += math.dist(prev_pz.processing_zone, curr_pz.processing_zone)
+            counted += 1
+        if counted:
+            distance_penalty = distance_weight_factor * (total_distance / counted)
+
+    return (
+        lookahead_cut_penalty_norm * lookahead_weight_factor
+        + balance_penalty * (var_required + var_lookahead * lookahead_weight_factor)
+        + distance_penalty
+    )
 
 
 
@@ -1350,6 +1453,12 @@ def main() -> None:
         help="Relative importance of future slices in the tabu cost.",
     )
     parser.add_argument(
+        "--distance-weight-factor",
+        type=float,
+        default=0.0,
+        help="Weight for penalizing movement of qubits between processing zones.",
+    )
+    parser.add_argument(
         "--no-plot",
         action="store_true",
         help="Disable diagnostic plotting.",
@@ -1379,6 +1488,8 @@ def main() -> None:
         pz_names=None,
         enable_plots=not args.no_plot,
         output_dir=args.output_dir,
+        distance_weight_factor=args.distance_weight_factor,
+        pz_map=None,
     )
 
     for result in partition_output["partition_results"]:

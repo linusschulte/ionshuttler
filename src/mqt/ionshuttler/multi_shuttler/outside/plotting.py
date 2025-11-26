@@ -88,8 +88,11 @@ def plot_state(
         for pz in graph.pzs:
             graph.add_edge(pz.parking_edge[0], pz.parking_edge[1], color="r")
 
-    edge_color = nx.get_edge_attributes(graph, "color").values()
-    node_color = list(nx.get_node_attributes(graph, "color").values())
+    nodes = list(graph.nodes())
+    edges = list(graph.edges())
+    node_color = [graph.nodes[n].get("color", "k") for n in nodes]
+    node_size = [graph.nodes[n].get("node_size", 300) for n in nodes]
+    edge_color = [graph.edges[e].get("color", "k") for e in edges]
     if plot_paper is False:
         edge_labels_vertical: dict[Edge, str] = {}
         edge_labels_regular: dict[Edge, str] = {}
@@ -102,7 +105,6 @@ def plot_state(
                 edge_labels_vertical[edge] = display
             else:
                 edge_labels_regular[edge] = display
-    node_size = list(nx.get_node_attributes(graph, "node_size").values())
 
     plt.figure(figsize=(20, 9))  # figsize=(max(pos.keys())[1] * 2, max(pos.keys())[0] * 2))
 
@@ -111,6 +113,8 @@ def plot_state(
     nx.draw_networkx(
         graph,
         pos=pos,
+        nodelist=nodes,
+        edgelist=edges,
         with_labels=with_labels,
         node_size=node_size,
         node_color=node_color,

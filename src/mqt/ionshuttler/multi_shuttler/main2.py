@@ -212,9 +212,6 @@ def main(config: dict[str, Any]):
     graph.initialize_slice_plan(None)
     gate_partition_for_run: dict[str, list[int]] | None = None
     gate_assignment: dict[int, str] = {}
-    if graph.sequence:
-        first_gate_id = graph.sequence[0]
-        gate_meta = graph.gate_info[first_gate_id]
     seq_length = len(graph.sequence)
     
     if PRINT_DEBUG:
@@ -332,7 +329,7 @@ def main(config: dict[str, Any]):
                 algo_params["num_pzs"] = config.get("num_pzs", 1)
             if "capacity" not in algo_params:
                 algo_params["capacity"] = config.get("max_ions_per_pz", 1)
-            print(algo_params)
+        
 
             result = fgp_roee(graph, **algo_params)
 
@@ -351,7 +348,6 @@ def main(config: dict[str, Any]):
                 algo_params["capacity"] = config.get("max_ions_per_pz", 1)
             if "lookahead_weight_factor" not in algo_params:
                 algo_params["lookahead_weight_factor"] = 1.0
-            
 
             result = fgp_tabu(graph, **algo_params)
 
@@ -461,6 +457,12 @@ def execute_run(config: dict[str, Any]) -> tuple[int, timedelta]:
 
 
 
+
+
+
+
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Compute heuristic shuttling schedules")
     parser.add_argument("config_file", help="Path to the JSON configuration file")
@@ -503,15 +505,15 @@ if __name__ == "__main__":
         return False
     
     # Meta study configuration
-    unique_id = None#"PZ_sweep"
+    unique_id = "PZ_sweep"
     
     meta_study_config = {
         # Core architecture parameters
         'num_ions': [20],
         'num_pzs': [4,6,8,10,12],
         'ions_per_pz': [3],
-        'grid_size': [3],
-        'mz_trap_size': [3],
+        'grid_size': [4],
+        'mz_trap_size': [1],
         'use_dag': [True],
         'enforce_slice_plan': [False],
         'save' : [False],

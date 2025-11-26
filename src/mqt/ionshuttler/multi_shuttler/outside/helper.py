@@ -27,12 +27,13 @@ def generate_pzs(num_pzs, m, n, v, h, height = -1):
         }
     else:
         pz_definitions = {}
-        top_segments = max(n - 1, 0)
+        top_segments = max(n-1, 0)
         bottom_segments = top_segments
-        left_segments = max(m - 1, 0)
+        left_segments = max(m-1, 0)
         right_segments = left_segments
         max_segments = max(top_segments, bottom_segments, left_segments, right_segments)
         pz_idx = 1
+
 
         for idx in range(max_segments):
             if idx < top_segments:

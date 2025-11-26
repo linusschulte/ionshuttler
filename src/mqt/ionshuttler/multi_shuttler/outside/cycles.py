@@ -83,7 +83,6 @@ def create_starting_config(graph: Graph, n_of_ions: int, seed: int | None = None
         random.seed(seed)
         starting_traps = []
         traps = [edges for edges in graph.edges() if graph.get_edge_data(edges[0], edges[1])["edge_type"] == "trap"]
-        print(" traps:", traps)
         n_of_traps = len(traps)
 
         random_starting_traps = random.sample(range(n_of_traps), (n_of_ions))
