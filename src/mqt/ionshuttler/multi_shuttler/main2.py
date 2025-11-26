@@ -8,6 +8,7 @@ import tempfile
 from datetime import datetime, timedelta
 from itertools import product
 from typing import Any
+from networkx import config
 from qiskit import QuantumCircuit
 
 import h5py
@@ -97,6 +98,7 @@ def should_use_legacy_cli(config: dict[str, Any]) -> bool:
     return (
         config.get("gate_partition_algorithm") is None
         and config.get("gate_partition") is None
+        and config.get("use_legacy_implementation", False) is True
         #and config.get("use_dag") is True
     )
 
@@ -179,7 +181,9 @@ def main(config: dict[str, Any]):
     graph.arch = str(arch)  # For plotting/logging
     graph.debug_gate_tracking = debug_gate_tracking
 
-    qasm_file_path = qasm_base_dir / algorithm_name / f"{algorithm_name}_{num_ions}.qasm"
+    gate_densities_string = "_" + str(config.get("gate_density")) + "_" + str(config.get("gate_density")) if config.get("gate_density") else ""
+
+    qasm_file_path = qasm_base_dir / (algorithm_name+f"{gate_densities_string}") / f"{algorithm_name}{gate_densities_string}_{num_ions}.qasm"
     # Parse and plot the circuit using Qiskit
 
     try:
@@ -467,6 +471,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Compute heuristic shuttling schedules")
     parser.add_argument("config_file", help="Path to the JSON configuration file")
     parser.add_argument("--run_meta_study", help="Run meta study with parameter sweeps y/n", default="n")
+    parser.add_argument("--use_legacy_implementation", help="If possible, run legacy implementation y/n", default="n")
     args = parser.parse_args()
 
     try:
@@ -478,6 +483,8 @@ if __name__ == "__main__":
     except json.JSONDecodeError:
         print(f"Error: Could not parse JSON file {args.config_file}")
         sys.exit(1)
+
+    config["use_legacy_implementation"] = args.use_legacy_implementation.lower() == "y"
 
     if args.run_meta_study.lower() != "y":
         #run single compilation
@@ -505,14 +512,14 @@ if __name__ == "__main__":
         return False
     
     # Meta study configuration
-    clear_prev = False
-    unique_id = "num_pz_sweep_20ions_4411_cap3"
-    #unique_id = ""
+    clear_prev = True
+    #unique_id = "num_pz_sweep_20ions_4411_cap3"
+    unique_id = "num_ions_sweep_4pzs_4411_cap3"
 
     meta_study_config = {
         # Core architecture parameters
-        'num_ions': [20],
-        'num_pzs': [4,5,6,7,8,9,10,11,12],
+        'num_ions': [10],
+        'num_pzs': [4],
         'ions_per_pz': [3],
         'grid_size': [4],
         'mz_trap_size': [1],
@@ -520,6 +527,7 @@ if __name__ == "__main__":
         'enforce_slice_plan': [False],
         'save' : [False],
         'plot' : [False],
+        'gate_density': [0.1, 0.25, 0.5, 0.75, 1.0],
         
         # Partitioning algorithm configurations
         'partitioning_algorithms': [
@@ -530,16 +538,17 @@ if __name__ == "__main__":
                     #'lookahead_weight_factor': [0.1, 0.5, 1.0, 2.0],
                     #'balance_penalty': [0.01, 5.0],#[1.75]
                     #'sigma': [0.01, 5.0],#[1.0]
+                    #'distance_weight_factor': [0.1,4.0],
                 },
                 '_sampling': {
                     'method': 'lhs',
-                    'num_samples': 50,
+                    'num_samples': 30,
                 },
             },
         ],
         #'partitioning_algorithms': [{'name': 'none'}],
     }
-    
+
     if unique_id != "":
         #stamp = datetime.now().strftime("%Y%m%d_%H")
         results_file = f"outputs/results/simulation_results_{config['algorithm_name']}_{unique_id}.h5"
@@ -653,6 +662,7 @@ if __name__ == "__main__":
                 'save': lambda v: v,
                 'plot': lambda v: v,
                 'grid_size': ('arch', lambda v: [v, v, run_params['mz_trap_size'], run_params['mz_trap_size']]),
+                'gate_density': lambda v: v,
             }
             
             # Apply direct parameter mappings

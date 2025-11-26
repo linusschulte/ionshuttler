@@ -66,7 +66,7 @@ def fgp_tabu(
     tabu_list_length: int = 20,
     lookahead_weight_factor: float = 1.0,
     lookahead_slices: int | float = math.inf,
-    distance_weight_factor: float = 0.0,
+    distance_weight_factor: float = 1.0,
 ) -> FGPResult:
     """Public entry point mirroring compute_gate_partition but using tabu refinement."""
 
@@ -679,6 +679,7 @@ def _run_fgp_tabu(
     if DEBUG_FLAG:
         print(f"Total improvement: {sum(pre_tabu_costs) - sum(post_tabu_costs):.4f} ({((sum(pre_tabu_costs) - sum(post_tabu_costs)) / sum(pre_tabu_costs) * 100) if sum(pre_tabu_costs) > 0 else 0.0:.2f}%)\n")
 
+
     peeled_subslices: list[list[dict[str, object]] | None] = [None] * len(time_slices)
 
     if enable_plots and output_dir is not None:
@@ -714,7 +715,7 @@ def _run_fgp_tabu(
             peeled_for_helper = [
                 subslice if subslice is not None else []
                 for subslice in peeled_subslices
-            ]
+            ]        
         (
             assignments,
             slice_plans,
@@ -728,6 +729,7 @@ def _run_fgp_tabu(
             num_qubits=num_qubits,
             peeled_subslices=peeled_for_helper,
         )
+
 
     return {
         "partition_results": partitioning_results,
@@ -750,7 +752,7 @@ def _align_clusters_to_previous(
     num_pzs: int,
     *,
     processing_only: bool = False,
-) -> None:
+) -> Sequence[ContractionResult]:
     prev_qubit_assignment = [-1] * num_qubits
 
     for slice_idx, result in enumerate(partitioning_results):
@@ -805,6 +807,8 @@ def _align_clusters_to_previous(
                     continue
                 prev_qubit_assignment[q] = cluster
         result.cluster_loads = cluster_loads
+
+    return partitioning_results  
 
 
 def _load_gate_metadata(qasm_path: Path) -> tuple[list[int], dict[int, GateInfo]]:
