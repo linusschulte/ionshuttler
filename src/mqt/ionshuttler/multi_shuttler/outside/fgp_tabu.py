@@ -16,7 +16,7 @@ from .fgp_roee import FGPResult, _build_time_slices
 from .graph import Graph
 from .types import GateInfo, SlicePlan
 
-DEBUG_FLAG = 1
+DEBUG_FLAG = 0
 
 @dataclass(slots=True)
 class Supernode:
@@ -725,6 +725,8 @@ def _align_clusters_to_previous(
 
         best_perm = list(range(num_pzs))
         best_score = sum(counts[i][best_perm[i]] for i in range(num_pzs))
+        
+        # TODO: Improve this, because its combinatorically expensive in num_pzs
         for perm in itertools.permutations(range(num_pzs)):
             score = sum(counts[i][perm[i]] for i in range(num_pzs))
             if score > best_score:

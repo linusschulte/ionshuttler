@@ -83,6 +83,7 @@ def create_starting_config(graph: Graph, n_of_ions: int, seed: int | None = None
         random.seed(seed)
         starting_traps = []
         traps = [edges for edges in graph.edges() if graph.get_edge_data(edges[0], edges[1])["edge_type"] == "trap"]
+        print(" traps:", traps)
         n_of_traps = len(traps)
 
         random_starting_traps = random.sample(range(n_of_traps), (n_of_ions))
@@ -390,12 +391,16 @@ def find_conflict_cycle_idxs(graph: Graph, cycles_dict: dict[int, list[Edge]]) -
                 # if cycle is exit cycle -> skip completely (was node in exit or exit_connection before -> new: need to check if exit is really an exit move -> need to also check cycle[0][0] node)
                 middle_node_type = nx.get_node_attributes(graph, "node_type")[cycles_dict[cycle][0][1]]
                 start_node_type = nx.get_node_attributes(graph, "node_type")[cycles_dict[cycle][0][0]]
-                if (
-                    middle_node_type == "exit_connection_node"
-                    and start_node_type != "processing_zone_node"
-                ) or (
+                end_node_type = nx.get_node_attributes(graph, "node_type")[cycles_dict[cycle][1][1]]
+                #print("start_node_type:", start_node_type)
+                #print("middle_node_type:", middle_node_type)
+                #print("end_node_type:", end_node_type)
+                if ( # going into processing zone
+                    middle_node_type in {"exit_connection_node"}
+                    and (start_node_type in {"processing_zone_node"} and end_node_type not in {"processing_zone_node"} )
+                ) or ( # going out of processing zone
                     middle_node_type == "exit_node"
-                    and start_node_type not in {"processing_zone_node", "exit_connection_node"}
+                    and (start_node_type not in {"processing_zone_node", "exit_connection_node"} and end_node_type not in {"processing_zone_node", "entry_connection_node"})
                 ):
                     cycle_or_path = []
 
@@ -428,6 +433,11 @@ def find_conflict_cycle_idxs(graph: Graph, cycles_dict: dict[int, list[Edge]]) -
     for cycle1, cycle2 in combinations_of_cycles:
         nodes1 = get_cycle_nodes(cycle1, graph)
         nodes2 = get_cycle_nodes(cycle2, graph)
+
+        #print(cycles_dict)
+        #print("comparing:")
+        #print(f"cylce {cycle1}:", nodes1)
+        #print(f"cycle {cycle2}:", nodes2)
 
         # new: exclude processing zone node -> if pz node in circles -> can both be executed (TODO check again for moves out of pz)
         # extra: if both end in same edge -> don't execute (scenario where path out of pz ends in same edge as next edge for other)

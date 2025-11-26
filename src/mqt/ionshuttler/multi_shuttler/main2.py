@@ -28,6 +28,8 @@ from outside.partition import get_partition
 from outside.processing_zone import ProcessingZone
 from outside.shuttle import main as run_shuttle_main
 
+from outside.helper import generate_pzs
+
 LEGACY_CLI_COMMAND = "mqt-ionshuttler-heuristic"
 _SIM_TIMESTEPS_RE = re.compile(r"Simulation finished in\s+(?P<value>\d+)\s+timesteps")
 _CPU_TIME_RE = re.compile(r"Total CPU time:\s+(?P<value>.+)")
@@ -95,6 +97,7 @@ def should_use_legacy_cli(config: dict[str, Any]) -> bool:
     return (
         config.get("gate_partition_algorithm") is None
         and config.get("gate_partition") is None
+        #and config.get("use_dag") is True
     )
 
 def main(config: dict[str, Any]):
@@ -144,30 +147,10 @@ def main(config: dict[str, Any]):
     m, n, v, h = arch
 
     # --- PZ Definitions ---
-    height = -2.5
-    pz_definitions = {
-        "pz1": ProcessingZone(
-            "pz1",
-            [
-                (float((m - 1) * v), float((n - 1) * h)),
-                (float((m - 1) * v), float(0)),
-                (float((m - 1) * v - height), float((n - 1) * h / 2)),
-            ],
-        ),
-        "pz2": ProcessingZone("pz2", [(0.0, 0.0), (0.0, float((n - 1) * h)), (float(height), float((n - 1) * h / 2))]),
-        "pz3": ProcessingZone(
-            "pz3", [(float((m - 1) * v), float(0)), (float(0), float(0)), (float((m - 1) * v / 2), float(height))]
-        ),
-        "pz4": ProcessingZone(
-            "pz4",
-            [
-                (float(0), float((n - 1) * h)),
-                (float((m - 1) * v), float((n - 1) * h)),
-                (float((m - 1) * v / 2), float((n - 1) * h - height)),
-            ],
-        ),
-    }
+
+    pz_definitions = generate_pzs(num_pzs=num_pzs_config, m=m, n=n, v=v, h=h)
     available_pz_names = list(pz_definitions.keys())
+
     pzs_to_use = [pz_definitions[name] for name in available_pz_names[:num_pzs_config]]
 
     if not pzs_to_use:
@@ -520,35 +503,43 @@ if __name__ == "__main__":
         return False
     
     # Meta study configuration
+    unique_id = None#"PZ_sweep"
+    
     meta_study_config = {
         # Core architecture parameters
-        'num_ions': [25],
-        'num_pzs': [4],
-        'ions_per_pz': [4],
-        'grid_size': [5],
-        'mz_trap_size': [1],
-        'use_dag': [False],
-        'enforce_slice_plan': [True],
+        'num_ions': [20],
+        'num_pzs': [4,6,8,10,12],
+        'ions_per_pz': [3],
+        'grid_size': [3],
+        'mz_trap_size': [3],
+        'use_dag': [True],
+        'enforce_slice_plan': [False],
+        'save' : [False],
+        'plot' : [False],
         
         # Partitioning algorithm configurations
         'partitioning_algorithms': [
-            #{'name': 'none'},  # No partitioning
+            {'name': 'none'},  # No partitioning
             {
                 'name': 'fgp_tabu',
                 'params': {
                     #'lookahead_weight_factor': [0.1, 0.5, 1.0, 2.0],
-                    'balance_penalty':  [0.1,2.5],#[1.5],#[0.1,2.0],#[1.75]
-                    'sigma':   [0.1,2.5],#[0.1,2.0],#[1.5]
+                    #'balance_penalty': [0.01, 5.0],#[1.75]
+                    #'sigma': [0.01, 5.0],#[1.0]
                 },
-                'sampling': {
+                '_sampling': {
                     'method': 'lhs',
-                    'num_samples': 30,
+                    'num_samples': 50,
                 },
             },
         ],
         #'partitioning_algorithms': [{'name': 'none'}],
     }
     
+    if unique_id != "":
+        #stamp = datetime.now().strftime("%Y%m%d_%H")
+        results_file = f"outputs/results/simulation_results_{config['algorithm_name']}_{unique_id}.h5"
+
     # Generate all valid combinations
     valid_combinations = []
     
@@ -565,11 +556,10 @@ if __name__ == "__main__":
         for algo_config in meta_study_config['partitioning_algorithms']:
             algo_name = algo_config['name']
             
-            # Skip 'none' partitioning if enforce_slice_plan is True
-            if algo_name == 'none' and base_dict.get('enforce_slice_plan', False):
-                base_dict['enforce_slice_plan'] = False
-            
+  
             if algo_name == 'none':
+                # enforce_slice_plan makes no sense for no slice plan
+                base_dict['enforce_slice_plan'] = False
                 # No algorithm parameters to expand
                 params_dict = base_dict.copy()
                 params_dict['partitioning_algorithm'] = 'none'
@@ -640,6 +630,7 @@ if __name__ == "__main__":
             if parameter_set_exists(f, run_params):
                 print(f"\nSkipping existing parameter set: {run_params}")
                 skipped += 1
+
                 continue
             
             # Update config for this run
@@ -650,6 +641,8 @@ if __name__ == "__main__":
                 'ions_per_pz': ('max_ions_per_pz', lambda v: v),
                 'use_dag': lambda v: v,
                 'enforce_slice_plan': lambda v: v,
+                'save': lambda v: v,
+                'plot': lambda v: v,
                 'grid_size': ('arch', lambda v: [v, v, run_params['mz_trap_size'], run_params['mz_trap_size']]),
             }
             
@@ -681,7 +674,7 @@ if __name__ == "__main__":
                     "params": algo_params
                 }
             
-            print(f"\n=== Run {result_index - existing_runs + 1} / {total_combinations} (New) ===")
+            print(f"\n=== Run {result_index + skipped - existing_runs + 1} / {total_combinations} new ===")
             #print(f"Config: {run_params}")
             
             run_name = f'run_{result_index:04d}'

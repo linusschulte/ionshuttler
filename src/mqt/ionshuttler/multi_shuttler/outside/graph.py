@@ -138,6 +138,8 @@ class Graph(nx.Graph):  # type: ignore [type-arg]
 
     @property
     def locked_gates(self) -> dict[int, str]:
+        if not hasattr(self, "_locked_gates"):
+            self._locked_gates = {}
         return self._locked_gates
 
     @locked_gates.setter
