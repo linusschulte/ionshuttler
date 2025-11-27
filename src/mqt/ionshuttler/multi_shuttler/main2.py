@@ -181,7 +181,11 @@ def main(config: dict[str, Any]):
     graph.arch = str(arch)  # For plotting/logging
     graph.debug_gate_tracking = debug_gate_tracking
 
-    gate_densities_string = "_" + str(config.get("gate_density")) + "_" + str(config.get("gate_density")) if config.get("gate_density") else ""
+    gate_density = config.get("gate_density")
+    if gate_density:
+        gate_densities_string = f"_{gate_density[0]}_{gate_density[1]}"
+    else:
+        gate_densities_string = ""
 
     qasm_file_path = qasm_base_dir / (algorithm_name+f"{gate_densities_string}") / f"{algorithm_name}{gate_densities_string}_{num_ions}.qasm"
     # Parse and plot the circuit using Qiskit
@@ -504,8 +508,9 @@ if __name__ == "__main__":
             run_group = results_group[run_name]
             # Check all stored attributes match the run parameters
             match = all(
-                run_group.attrs.get(key) == value
-                for key, value in run_params.items()
+                np.array_equal(run_group.attrs.get(k), v) if isinstance(run_group.attrs.get(k), np.ndarray)
+                else run_group.attrs.get(k) == v
+                for k, v in run_params.items()
             )
             if match:
                 return True
@@ -514,21 +519,23 @@ if __name__ == "__main__":
     # Meta study configuration
     clear_prev = True
     #unique_id = "num_pz_sweep_20ions_4411_cap3"
-    unique_id = "num_ions_sweep_4pzs_4411_cap3"
+    unique_id = "capacity_4pzs_20ions_4411"
 
     meta_study_config = {
         # Core architecture parameters
-        'num_ions': [10],
+        'num_ions': [20],
         'num_pzs': [4],
-        'ions_per_pz': [3],
+        'ions_per_pz': [2,3,4,5,6],
         'grid_size': [4],
         'mz_trap_size': [1],
         'use_dag': [True],
         'enforce_slice_plan': [False],
         'save' : [False],
         'plot' : [False],
-        'gate_density': [0.1, 0.25, 0.5, 0.75, 1.0],
-        
+        'gate_density': [(0.5,0.5)],
+        #'gate_density': [(0.0,1.0), (0.1,0.9), (0.2,0.8), (0.3,0.7), (0.4,0.6), (0.5,0.5), (0.6,0.4), (0.7,0.3), (0.8,0.2), (0.9,0.1), (1.0,0.0)],
+        #'gate_density': [(0.1,0.1), (0.25,0.25), (0.5,0.5), (0.75, 0.75), (1.0, 1.0)], 
+
         # Partitioning algorithm configurations
         'partitioning_algorithms': [
             {'name': 'none'},  # No partitioning
@@ -714,11 +721,14 @@ if __name__ == "__main__":
                 run_group.attrs['cpu_time_seconds'] = cpu_time.total_seconds()
                 
                 
-                print(f"Completed: {final_timesteps} timesteps, {cpu_time.total_seconds():.2f}s CPU time")
+                print(f"- Completed., {cpu_time.total_seconds():.2f}s CPU time")
                 if run_group.attrs['success']:
+                    print(f"- Sucessful!, {cpu_time.total_seconds():.2f}s CPU time")
                     if best_timesteps is None or final_timesteps < best_timesteps:
                         best_timesteps = final_timesteps
                         best_params = run_params.copy()
+                else:
+                    print(f"- FAILED. {cpu_time.total_seconds():.2f}s CPU time")
                 
             except KeyboardInterrupt:
                 print("Meta study interrupted by user. Current configuration will be retried on the next run.")
