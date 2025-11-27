@@ -400,6 +400,7 @@ def find_conflict_cycle_idxs(graph: Graph, cycles_dict: dict[int, list[Edge]]) -
                 #    print("start_node_type:", start_node_type)
                 #    print("middle_node_type:", middle_node_type)
                 #    print("end_node_type:", end_node_type)
+
                 if ( # going into processing zone
                     middle_node_type in {"exit_connection_node"}
                     and (start_node_type in {"processing_zone_node"} and end_node_type not in {"processing_zone_node"} )
@@ -407,7 +408,7 @@ def find_conflict_cycle_idxs(graph: Graph, cycles_dict: dict[int, list[Edge]]) -
                     middle_node_type == "exit_node"
                     and (start_node_type not in {"processing_zone_node", "exit_connection_node"} and end_node_type not in {"processing_zone_node", "entry_connection_node"})
                 ):
-                    cycle_or_path = []
+                    pass #cycle_or_path = []
 
             # new if same edge twice is parking edge -> skip completely
             elif get_idx_from_idc(graph.idc_dict, cycles_dict[cycle][0]) in graph.parking_edges_idxs:
@@ -432,25 +433,25 @@ def find_conflict_cycle_idxs(graph: Graph, cycles_dict: dict[int, list[Edge]]) -
             else:
                 nodes.add(node1)
                 nodes.add(node2)
-        #if not nodes:
-        #    node_types = nx.get_node_attributes(graph, "node_type")
-        #    for edge in cycles_dict[cycle]:
-        #        for node in edge:
-        #            if node_types.get(node) != "processing_zone_node":
-        #                nodes.add(node)
+        if not nodes:
+            node_types = nx.get_node_attributes(graph, "node_type")
+            for edge in cycles_dict[cycle]:
+                for node in edge:
+                    if node_types.get(node) != "processing_zone_node":
+                        nodes.add(node)
         return nodes
 
     junction_shared_pairs = []
 
     if DEBUG_FLAG:
-        print("----------> checking cylces for conflicts:", dict(sorted(cycles_dict.items())))
+        print("----------> checking cylces for conflicts:", cycles_dict)
     
     for cycle1, cycle2 in combinations_of_cycles:
         nodes1 = get_cycle_nodes(cycle1, graph)
         nodes2 = get_cycle_nodes(cycle2, graph)
 
         if DEBUG_FLAG :
-            #print(dict(sorted(cycles_dict.items())))
+            print(dict(sorted(cycles_dict.items())))
             print("comparing:")
             print(f"cylce {cycle1}:", nodes1)
             print(f"cycle {cycle2}:", nodes2)
