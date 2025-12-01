@@ -365,28 +365,25 @@ def main(config: dict[str, Any]):
                 graph.initialize_slice_plan(result.slice_plan)
             else:
                 graph.initialize_slice_plan(None)
-        elif algo_name_lower == "tdag":
-            if not use_dag or dag is None:
-                msg = "TDAG gate partitioning requires use_dag=True."
-                raise ValueError(msg)
+        elif algo_name_lower in {"tdag", "fgp_tdag"}:
             from outside.tdag import compute_gate_partition_tdag
 
-
-            max_qubits = algo_params.get("k", 4)
+            capacity = algo_params.get("k", algo_params.get("capacity", 4))
+            balance_penalty = algo_params.get("balance_penalty", 0.5)
             tdag_result = compute_gate_partition_tdag(
                 graph,
                 dag,
-                max_qubits_per_block=max_qubits,
+                capacity=capacity,
+                qasm_file_path=qasm_file_path,
+                balance_penalty=balance_penalty,
             )
-            pz_names = [pz.name for pz in graph.pzs]
-            gate_partition_for_run = {pz_name: [] for pz_name in pz_names}
-            gate_assignment = {}
-            blocks = tdag_result.get("blocks", [])
-            for idx, block in enumerate(blocks):
-                pz_name = pz_names[idx % len(pz_names)]
-                gate_partition_for_run[pz_name].extend(block)
-                for gate_id in block:
-                    gate_assignment[gate_id] = pz_name
+            gate_partition_for_run = tdag_result.get("gate_partition_for_run", {})
+            gate_assignment = tdag_result.get("gate_assignment", {})
+
+            print("gate_partition_for_run:")
+            for gate_pz, gate_ids in gate_partition_for_run.items():
+                print(f"  {gate_pz}: {sorted(gate_ids)}")
+
             graph.initialize_slice_plan(None)
         else:
             msg = f"Unknown gate partition algorithm '{algo_name}'."
@@ -517,22 +514,22 @@ if __name__ == "__main__":
         return False
     
     # Meta study configuration
-    clear_prev = True
+    clear_prev = False
     #unique_id = "num_pz_sweep_20ions_4411_cap3"
-    unique_id = "capacity_4pzs_20ions_4411"
+    unique_id = "global collection"
 
     meta_study_config = {
         # Core architecture parameters
-        'num_ions': [20],
+        'num_ions': [6,8,10,12,15,20,30,40,50,60],
         'num_pzs': [4],
-        'ions_per_pz': [2,3,4,5,6],
-        'grid_size': [4],
+        'ions_per_pz': [3],
+        'grid_size': [6],
         'mz_trap_size': [1],
-        'use_dag': [True],
+        'use_dag': [True, False],
         'enforce_slice_plan': [False],
         'save' : [False],
         'plot' : [False],
-        'gate_density': [(0.5,0.5)],
+        'gate_density': [(0.5, 0.5)],
         #'gate_density': [(0.0,1.0), (0.1,0.9), (0.2,0.8), (0.3,0.7), (0.4,0.6), (0.5,0.5), (0.6,0.4), (0.7,0.3), (0.8,0.2), (0.9,0.1), (1.0,0.0)],
         #'gate_density': [(0.1,0.1), (0.25,0.25), (0.5,0.5), (0.75, 0.75), (1.0, 1.0)], 
 
@@ -572,6 +569,13 @@ if __name__ == "__main__":
     base_params = {k: v for k, v in meta_study_config.items() if k != 'partitioning_algorithms'}
     base_param_names = [k for k in base_params.keys()]
     base_param_values = [base_params[k] for k in base_param_names]
+
+    # Fallback params from JSON config (e.g., gate_partition_algorithm)
+    fallback_algo_params: dict[str, dict[str, Any]] = {}
+    gpa = config.get("gate_partition_algorithm")
+    if isinstance(gpa, dict) and gpa.get("name"):
+        fallback_algo_params[gpa["name"]] = gpa.get("params", {})
+
     
     # Iterate through all base parameter combinations
     for base_combo in product(*base_param_values):
@@ -591,7 +595,11 @@ if __name__ == "__main__":
                 valid_combinations.append(params_dict)
             else:
                 # Generate all combinations of algorithm parameters
-                algo_params = algo_config.get('params', {})
+                algo_params = dict(algo_config.get('params', {}))
+                # Supply missing params from JSON config for matching algorithm
+                for param_name, param_value in fallback_algo_params.get(algo_name, {}).items():
+                    if param_name not in algo_params:
+                        algo_params[param_name] = param_value if isinstance(param_value, list) else [param_value]
                 if algo_params:
                     algo_param_names = list(algo_params.keys())
                     algo_param_values = [algo_params[k] for k in algo_param_names]
@@ -721,14 +729,13 @@ if __name__ == "__main__":
                 run_group.attrs['cpu_time_seconds'] = cpu_time.total_seconds()
                 
                 
-                print(f"- Completed., {cpu_time.total_seconds():.2f}s CPU time")
                 if run_group.attrs['success']:
-                    print(f"- Sucessful!, {cpu_time.total_seconds():.2f}s CPU time")
+                    print(f" - Successful!, {cpu_time.total_seconds():.2f}s CPU time")
                     if best_timesteps is None or final_timesteps < best_timesteps:
                         best_timesteps = final_timesteps
                         best_params = run_params.copy()
                 else:
-                    print(f"- FAILED. {cpu_time.total_seconds():.2f}s CPU time")
+                    print(f" - FAILED. {cpu_time.total_seconds():.2f}s CPU time")
                 
             except KeyboardInterrupt:
                 print("Meta study interrupted by user. Current configuration will be retried on the next run.")

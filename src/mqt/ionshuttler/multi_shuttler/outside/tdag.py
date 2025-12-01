@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Mapping
 
 from qiskit.dagcircuit import DAGDependency, DAGDepNode
 
-from .compilation import build_node_gate_id_lookup, manual_copy_dag
+from .compilation import (
+    build_node_gate_id_lookup,
+    create_dag,
+    create_initial_sequence,
+    manual_copy_dag,
+)
 
 if TYPE_CHECKING:
     from .graph import Graph
@@ -13,19 +19,37 @@ if TYPE_CHECKING:
 
 def compute_gate_partition_tdag(
     graph: "Graph",
-    dag: DAGDependency,
-    max_qubits_per_block: int = 4,
-) -> dict[str, list[list[int]]]:
-    """Partition gates using the TDAG strategy described in the GLSVLSI'23 paper."""
+    dag: DAGDependency | None,
+    capacity: int = 4,
+    qasm_file_path: Path | None = None,
+    balance_penalty: float = 0.25,
+) -> dict[str, list[list[int]] | dict[str, list[int]] | dict[int, str]]:
+    """Partition gates using the TDAG strategy described in the GLSVLSI'23 paper.
 
+    If no ``dag`` is provided, a fresh DAG is built from ``qasm_file_path`` and
+    the graph's ``sequence``/``gate_info`` are populated when missing.
+    Blocks are clustered across PZs by preferring qubit overlap and lightly
+    penalizing load (``balance_bias``).
+    """
+
+    parsed_circuit = None
     if dag is None:
-        msg = "TDAG partitioning requires a DAGDependency instance."
-        raise ValueError(msg)
-    if max_qubits_per_block <= 0:
+        if qasm_file_path is None:
+            msg = "TDAG partitioning requires either a DAGDependency instance or a QASM file path."
+            raise ValueError(msg)
+        dag = create_dag(qasm_file_path)
+    if (not getattr(graph, "_sequence", None)) or (not getattr(graph, "_gate_info", None)):
+        if qasm_file_path is None:
+            msg = "TDAG partitioning requires gate metadata; provide qasm_file_path when none is set on the graph."
+            raise ValueError(msg)
+        parsed_circuit = parsed_circuit or create_initial_sequence(qasm_file_path)
+        graph.sequence = parsed_circuit.sequence.copy()
+        graph.gate_info = parsed_circuit.gate_info
+    if capacity <= 0:
         msg = "max_qubits_per_block must be a positive integer"
         raise ValueError(msg)
     if not graph.sequence:
-        return {"blocks": []}
+        return {"blocks": [], "gate_partition_for_run": {}, "gate_assignment": {}}
 
     working_dag = manual_copy_dag(dag)
     node_to_gate = build_node_gate_id_lookup(working_dag, graph.gate_info)
@@ -34,8 +58,8 @@ def compute_gate_partition_tdag(
 
     blocks: list[list[int]] = []
     while active_sequence:
-        deps_by_node = _compute_k_limited_dependencies(working_dag, max_qubits_per_block)
-        qubit_groups = _enumerate_groups(working_dag, deps_by_node, max_qubits_per_block)
+        deps_by_node = _compute_k_limited_dependencies(working_dag, capacity)
+        qubit_groups = _enumerate_groups(working_dag, deps_by_node, capacity)
         candidates = _build_candidate_blocks(active_sequence, graph.gate_info, qubit_groups)
         if not candidates:
             fallback_gate = active_sequence[0]
@@ -58,7 +82,39 @@ def compute_gate_partition_tdag(
             node_to_gate,
         )
 
-    return {"blocks": blocks}
+    # Cluster blocks onto PZs with overlap preference and balancing bias
+    pz_names = [pz.name for pz in graph.pzs]
+    gate_partition_for_run: dict[str, list[int]] = {name: [] for name in pz_names}
+    gate_assignment: dict[int, str] = {}
+    pz_qubits: dict[str, set[int]] = {name: set() for name in pz_names}
+    pz_load: dict[str, int] = {name: 0 for name in pz_names}
+
+    if pz_names:
+        for block in blocks:
+            block_qubits = set(q for gid in block for q in graph.gate_info[gid].qubits)
+            best_pz = None
+            best_score = float("-inf")
+            for pz_name in pz_names:
+                overlap = len(block_qubits & pz_qubits[pz_name])
+                score = overlap - balance_penalty * pz_load[pz_name]
+                if score > best_score or (
+                    score == best_score and pz_load[pz_name] < pz_load.get(best_pz, float("inf"))
+                ):
+                    best_score = score
+                    best_pz = pz_name
+
+            target = best_pz or pz_names[0]
+            gate_partition_for_run[target].extend(block)
+            pz_load[target] += len(block)
+            pz_qubits[target].update(block_qubits)
+            for gate_id in block:
+                gate_assignment[gate_id] = target
+
+    return {
+        "blocks": blocks,
+        "gate_partition_for_run": gate_partition_for_run,
+        "gate_assignment": gate_assignment,
+    }
 
 
 def _compute_k_limited_dependencies(
@@ -68,7 +124,7 @@ def _compute_k_limited_dependencies(
     """Collect dependencies for each node and truncate to ``k`` qubits."""
 
     dependencies: dict[int, set[int]] = {}
-    for node in dag.topological_op_nodes():
+    for node in _topological_op_nodes(dag):
         current = set(node.qindices)
         for predecessor in dag.direct_predecessors(node.node_id):
             if getattr(predecessor, "type", None) != "op":
@@ -102,7 +158,7 @@ def _enumerate_groups(
                 continue
             dfs(successor, merged)
 
-    for start_node in dag.topological_op_nodes():
+    for start_node in _topological_op_nodes(dag):
         dfs(start_node, set())
 
     return groups
@@ -155,3 +211,11 @@ def _remove_from_dag_and_sequence(
         dag._multi_graph.remove_node(node_id)
 
     active_sequence[:] = [gate_id for gate_id in active_sequence if gate_id not in gate_id_set]
+
+
+def _topological_op_nodes(dag: DAGDependency) -> Iterable[DAGDepNode]:
+    """Yield DAG nodes in topological order, restricted to op nodes."""
+
+    if hasattr(dag, "topological_op_nodes"):
+        return dag.topological_op_nodes()
+    return (node for node in dag.topological_nodes() if getattr(node, "type", None) == "op")
