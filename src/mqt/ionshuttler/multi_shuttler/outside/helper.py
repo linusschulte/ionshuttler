@@ -2,7 +2,7 @@ from outside.processing_zone import ProcessingZone
 
 def generate_pzs(num_pzs, m, n, v, h, height = -1):
    
-    if num_pzs <= 4:
+    if num_pzs <= 0:
         pz_definitions =  {
             "pz1": ProcessingZone(
                 "pz1",
@@ -51,28 +51,28 @@ def generate_pzs(num_pzs, m, n, v, h, height = -1):
                 pz_idx += 1
 
             if idx < bottom_segments:
-                y_start = idx * h
-                y_end = (idx + 1) * h
+                y_start = (bottom_segments-idx) * h
+                y_end = (max_segments- (idx + 1)) * h
                 pz_name = f"pz{pz_idx}"
                 pz_definitions[pz_name] = ProcessingZone(
                     pz_name,
                     [
-                        (float((m - 1) * v), float(y_end)),
                         (float((m - 1) * v), float(y_start)),
+                        (float((m - 1) * v), float(y_end)),
                         (float((m - 1) * v - height), float((y_start + y_end) / 2)),
                     ],
                 )
                 pz_idx += 1
 
             if idx < left_segments:
-                x_start = idx * v
-                x_end = (idx + 1) * v
+                x_start = (left_segments - idx) * v
+                x_end = (left_segments - (idx + 1)) * v
                 pz_name = f"pz{pz_idx}"
                 pz_definitions[pz_name] = ProcessingZone(
                     pz_name,
                     [
-                        (float(x_end), 0.0),
                         (float(x_start), 0.0),
+                        (float(x_end), 0.0),
                         (float((x_start + x_end) / 2), float(height)),
                     ],
                 )

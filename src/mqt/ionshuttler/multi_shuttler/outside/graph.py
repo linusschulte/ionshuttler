@@ -267,3 +267,11 @@ class Graph(nx.Graph):  # type: ignore [type-arg]
     @slice_remaining_gates.setter
     def slice_remaining_gates(self, value: list[set[int]]) -> None:
         self._slice_remaining_gates = value
+
+    @property
+    def enable_memory_zone_manager(self) -> bool:
+        return getattr(self, "_enable_memory_zone_manager", False)
+
+    @enable_memory_zone_manager.setter
+    def enable_memory_zone_manager(self, value: bool) -> None:
+        self._enable_memory_zone_manager = bool(value)

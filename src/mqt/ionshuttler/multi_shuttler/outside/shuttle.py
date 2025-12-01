@@ -11,6 +11,7 @@ from more_itertools import last
 from .compilation import get_all_first_gates_and_update_sequence_non_destructive, remove_processed_gates
 from .cycles import get_ions
 from .graph_utils import get_idc_from_idx, get_idx_from_idc
+from .memory_manager import apply_memory_zone_manager
 from .plotting import plot_state
 from .scheduling import (
     create_cycles_for_moves,
@@ -306,11 +307,24 @@ def shuttle(
             if relevant and DEBUG_FLAG:
                 print(f"[debug][t={timestep}] PZ {pz.name} adjusted cycles: {relevant}")
 
+    extra_cycles = apply_memory_zone_manager(
+        graph,
+        all_cycles,
+        part_prio_queues,
+        plan_active=plan_active,
+        current_plan=current_plan,
+        timestep=timestep,
+    )
 
-    if DEBUG_FLAG:
-        print(f"[debug][t={timestep}] all_cycles snapshot:")
-        for ion, cycle in all_cycles.items():
-            print(f"  ion {ion}: {cycle}")
+    if extra_cycles and DEBUG_FLAG:
+        print(f"[debug][t={timestep}] memory manager cycles: {extra_cycles}")
+
+    all_cycles = {**all_cycles, **extra_cycles}
+
+    #if DEBUG_FLAG:
+    #    print(f"[debug][t={timestep}] all_cycles snapshot:")
+    #    for ion, cycle in all_cycles.items():
+    #        print(f"  ion {ion}: {cycle}")
 
     # ensure any ion with a pending cycle appears in the priority queue
     priority_queue_for_cycles: OrderedDict[int, str] = OrderedDict(priority_queue)
@@ -611,6 +625,8 @@ def main(
                         ):
                             pz.gate_execution_finished = False
                             pz.time_in_pz_counter += 1
+
+                            print(f"gate {gate_id} in pz {pz.name} time counter {pz.time_in_pz_counter}")
                             gate_time = 3
                             if pz.time_in_pz_counter == gate_time:
                                 processed_gate_ids.insert(0, gate_id)
