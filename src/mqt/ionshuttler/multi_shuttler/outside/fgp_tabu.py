@@ -14,6 +14,7 @@ import numpy as np
 from scipy.spatial import ConvexHull
 
 from .compilation import create_initial_sequence
+from .cycles import shortest_path_to_node
 from .fgp_roee import FGPResult, _build_time_slices
 from .graph import Graph
 from .processing_zone import ProcessingZone
@@ -67,6 +68,7 @@ def fgp_tabu(
     lookahead_weight_factor: float = 1.0,
     lookahead_slices: int | float = math.inf,
     distance_weight_factor: float = 1.0,
+    graph_based_distance: bool = False,
 ) -> FGPResult:
     """Public entry point mirroring compute_gate_partition but using tabu refinement."""
 
@@ -83,6 +85,7 @@ def fgp_tabu(
         print(f"lookahead_weight_factor: {lookahead_weight_factor}")
         print(f"lookahead_slices: {lookahead_slices}")
         print(f"distance_weight_factor: {distance_weight_factor}")
+        print(f"graph_based_distance: {graph_based_distance}")
         print()
 
     if not graph.sequence:
@@ -99,6 +102,7 @@ def fgp_tabu(
     capacity = max(capacity or math.ceil(num_qubits / num_pzs), 1)
     pz_names = [pz.name for pz in graph.pzs]
     pz_positions: Sequence[ProcessingZone | None] = [graph.pzs_name_map.get(name) for name in pz_names]
+    pz_distance_map = _build_pz_distance_map(graph, pz_positions, graph_based_distance=graph_based_distance)
 
     
 
@@ -118,6 +122,7 @@ def fgp_tabu(
         lookahead_slices=lookahead_slices,
         distance_weight_factor=distance_weight_factor,
         pz_positions=pz_positions,
+        pz_distance_map=pz_distance_map,
     )
 
     if DEBUG_FLAG:
@@ -178,6 +183,7 @@ def partition_slice(
     previous_qubit_assignment: list[int] | None = None,
     pz_positions: Sequence[ProcessingZone | None] | None = None,
     distance_weight_factor: float = 0.0,
+    pz_distance_map: dict[tuple[str, str], float] | None = None,
 ) -> ContractionResult:
     """Contract the slice graph and produce a greedy initial assignment."""
 
@@ -247,6 +253,7 @@ def partition_slice(
             pz_positions=pz_positions,
             previous_qubit_assignment=previous_qubit_assignment,
             distance_weight_factor=distance_weight_factor,
+            pz_distance_map=pz_distance_map,
         )
 
     # tabu search to optimized partitioning
@@ -261,6 +268,7 @@ def partition_slice(
             pz_positions=pz_positions,
             previous_qubit_assignment=previous_qubit_assignment,
             distance_weight_factor=distance_weight_factor,
+            pz_distance_map=pz_distance_map,
         )
 
     if result.assignment is not None:
@@ -273,6 +281,7 @@ def partition_slice(
             pz_positions=pz_positions,
             previous_qubit_assignment=previous_qubit_assignment,
             distance_weight_factor=distance_weight_factor,
+            pz_distance_map=pz_distance_map,
         )
         
     return result
@@ -289,6 +298,7 @@ def tabu_optimize_partition(
     pz_positions: Sequence[ProcessingZone | None] | None = None,
     previous_qubit_assignment: list[int] | None = None,
     distance_weight_factor: float = 0.0,
+    pz_distance_map: dict[tuple[str, str], float] | None = None,
 ) -> tuple[list[int], list[int]]:
     if result.assignment is None:
         raise ValueError("Refinement requires an initial assignment.")
@@ -303,6 +313,7 @@ def tabu_optimize_partition(
         pz_positions=pz_positions,
         previous_qubit_assignment=previous_qubit_assignment,
         distance_weight_factor=distance_weight_factor,
+        pz_distance_map=pz_distance_map,
     )
     tabu_list: list[tuple[int, int]] = []
 
@@ -316,6 +327,7 @@ def tabu_optimize_partition(
             pz_positions=pz_positions,
             previous_qubit_assignment=previous_qubit_assignment,
             distance_weight_factor=distance_weight_factor,
+            pz_distance_map=pz_distance_map,
         )
         best_move = None
         best_move_cost = current_cost
@@ -339,6 +351,7 @@ def tabu_optimize_partition(
                     pz_positions=pz_positions,
                     previous_qubit_assignment=previous_qubit_assignment,
                     distance_weight_factor=distance_weight_factor,
+                    pz_distance_map=pz_distance_map,
                 )
                 if cost < best_move_cost:
                     best_move_cost = cost
@@ -637,6 +650,7 @@ def _run_fgp_tabu(
     lookahead_slices: int | float,
     distance_weight_factor: float = 0.0,
     pz_positions: Sequence[ProcessingZone | None] | None = None,
+    pz_distance_map: dict[tuple[str, str], float] | None = None,
 
 ) -> dict[str, object]:
     """Core partition routine shared by CLI and API entry points."""
@@ -669,6 +683,7 @@ def _run_fgp_tabu(
             previous_qubit_assignment=prev_qubit_assignment,
             pz_positions=pz_positions,
             distance_weight_factor=distance_weight_factor,
+            pz_distance_map=pz_distance_map,
         )
         partitioning_results.append(result)
         if num_pzs:
@@ -1002,6 +1017,63 @@ def _greedy_initial_partition(
 
     return assignment, cluster_loads
 
+def get_pz_distance(
+    pz1: ProcessingZone,
+    pz2: ProcessingZone,
+    pz_distance_map: dict[tuple[str, str], float] | None = None,
+) -> float:
+    if pz1.name == pz2.name:
+        return 0.0
+    if pz_distance_map:
+        key = (pz1.name, pz2.name)
+        if key in pz_distance_map:
+            return pz_distance_map[key]
+        key_rev = (pz2.name, pz1.name)
+        if key_rev in pz_distance_map:
+            return pz_distance_map[key_rev]
+    return math.dist(pz1.processing_zone, pz2.processing_zone)
+
+
+def _build_pz_distance_map(
+    graph: Graph,
+    pz_positions: Sequence[ProcessingZone | None],
+    *,
+    graph_based_distance: bool = True,
+) -> dict[tuple[str, str], float]:
+    distance_map: dict[tuple[str, str], float] = {}
+    if not graph_based_distance:
+        for i, pz_i in enumerate(pz_positions):
+            if pz_i is None:
+                continue
+            for j in range(i + 1, len(pz_positions)):
+                pz_j = pz_positions[j]
+                if pz_j is None:
+                    continue
+                key = (pz_i.name, pz_j.name)
+                distance_map[key] = math.dist(pz_i.processing_zone, pz_j.processing_zone)
+        return distance_map
+
+    for i, pz_i in enumerate(pz_positions):
+        if pz_i is None:
+            continue
+        for j in range(i + 1, len(pz_positions)):
+            pz_j = pz_positions[j]
+            if pz_j is None:
+                continue
+            key = (pz_i.name, pz_j.name)
+            try:
+                path = shortest_path_to_node(
+                    graph,
+                    pz_i.processing_zone,
+                    pz_j.processing_zone,
+                    exclude_first_entry_connection=True,
+                )
+                distance_map[key] = max(len(path) - 1, 0) if path else math.dist(
+                    pz_i.processing_zone, pz_j.processing_zone
+                )
+            except Exception:
+                distance_map[key] = math.dist(pz_i.processing_zone, pz_j.processing_zone)
+    return distance_map
 
 
 def _compute_cost(
@@ -1014,6 +1086,7 @@ def _compute_cost(
     pz_positions: Sequence[ProcessingZone | None] | None = None,
     previous_qubit_assignment: list[int] | None = None,
     distance_weight_factor: float = 0.0,
+    pz_distance_map: dict[tuple[str, str], float] | None = None,
 ) -> float:
     if len(assignment) != len(result.supernodes):
         raise ValueError("Assignment length mismatch.")
@@ -1080,7 +1153,7 @@ def _compute_cost(
             curr_pz = pz_positions[curr_cluster] if curr_cluster < len(pz_positions) else None
             if prev_pz is None or curr_pz is None:
                 continue
-            total_distance += math.dist(prev_pz.processing_zone, curr_pz.processing_zone)
+            total_distance += get_pz_distance(prev_pz, curr_pz, pz_distance_map)
             counted += 1
         if counted:
             distance_penalty = distance_weight_factor * (total_distance / counted)
@@ -1495,7 +1568,8 @@ def main() -> None:
         enable_plots=not args.no_plot,
         output_dir=args.output_dir,
         distance_weight_factor=args.distance_weight_factor,
-        pz_map=None,
+        pz_positions=None,
+        pz_distance_map=None,
     )
 
     for result in partition_output["partition_results"]:

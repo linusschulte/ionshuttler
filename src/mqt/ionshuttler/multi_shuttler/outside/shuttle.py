@@ -92,7 +92,11 @@ def build_plot_annotations(graph: Graph, in_process_ions: list[int], processed_g
 
 
 def _has_active_slice_plan(graph: Graph) -> bool:
-    return bool(graph.slice_plan) and graph.current_slice_index < len(graph.slice_plan)
+    return (
+        bool(getattr(graph, "enforce_slice_plan", False))
+        and bool(graph.slice_plan)
+        and graph.current_slice_index < len(graph.slice_plan)
+    )
 
 
 def _build_gate_info_list_from_plan(graph: Graph, plan_slice: SlicePlan) -> dict[str, list[int]]:
@@ -422,7 +426,7 @@ def main(
     graph.gate_pz_assignment = assignment_map
     graph.current_gate_by_pz = {}
     if slice_plan is not None:
-        graph.initialize_slice_plan(slice_plan)
+        graph.initialize_slice_plan(slice_plan, enforce=getattr(graph, "enforce_slice_plan", True))
 
     for pz in graph.pzs:
         pz.time_in_pz_counter = 0
@@ -626,7 +630,6 @@ def main(
                             pz.gate_execution_finished = False
                             pz.time_in_pz_counter += 1
 
-                            print(f"gate {gate_id} in pz {pz.name} time counter {pz.time_in_pz_counter}")
                             gate_time = 3
                             if pz.time_in_pz_counter == gate_time:
                                 processed_gate_ids.insert(0, gate_id)

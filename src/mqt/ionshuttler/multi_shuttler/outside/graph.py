@@ -221,9 +221,10 @@ class Graph(nx.Graph):  # type: ignore [type-arg]
     def current_gate_by_pz(self, value: dict[str, int]) -> None:
         self._current_gate_by_pz = value
 
-    def initialize_slice_plan(self, plan: list[SlicePlan] | None) -> None:
+    def initialize_slice_plan(self, plan: list[SlicePlan] | None, enforce: bool = True) -> None:
         self.slice_plan = plan
-        if plan is None:
+        self.enforce_slice_plan = enforce if plan is not None else False
+        if plan is None or not enforce:
             self.current_slice_index = 0
             self.slice_remaining_gates = []
             return
@@ -267,6 +268,14 @@ class Graph(nx.Graph):  # type: ignore [type-arg]
     @slice_remaining_gates.setter
     def slice_remaining_gates(self, value: list[set[int]]) -> None:
         self._slice_remaining_gates = value
+
+    @property
+    def enforce_slice_plan(self) -> bool:
+        return getattr(self, "_enforce_slice_plan", False)
+
+    @enforce_slice_plan.setter
+    def enforce_slice_plan(self, value: bool) -> None:
+        self._enforce_slice_plan = bool(value)
 
     @property
     def enable_memory_zone_manager(self) -> bool:

@@ -153,7 +153,11 @@ def main(config: dict[str, Any]):
     pz_definitions = generate_pzs(num_pzs=num_pzs_config, m=m, n=n, v=v, h=h)
     available_pz_names = list(pz_definitions.keys())
 
-    pzs_to_use = [pz_definitions[name] for name in available_pz_names[:num_pzs_config]]
+    pz_names_to_use = [f"pz{pz}" for pz in config.get("pz_numbers_to_use", range(1, num_pzs_config + 1))]
+
+    assert all(name in available_pz_names for name in pz_names_to_use), f"Some specified PZ names are invalid: {pz_names_to_use}"
+
+    pzs_to_use = [pz_definitions[name] for name in pz_names_to_use]
 
     if not pzs_to_use:
         print(f"Error: num_pzs ({num_pzs_config}) is invalid or results in no PZs selected.")
@@ -180,6 +184,7 @@ def main(config: dict[str, Any]):
     graph.save = save_flag
     graph.arch = str(arch)  # For plotting/logging
     graph.debug_gate_tracking = debug_gate_tracking
+    graph.enable_memory_zone_manager = config.get("enable_memory_zone_manager", False)
 
     gate_density = config.get("gate_density")
     if gate_density:
@@ -343,10 +348,7 @@ def main(config: dict[str, Any]):
 
             gate_partition_for_run = result.gate_partition_by_pz
             gate_assignment = result.gate_assignment
-            if enforce_slice_plan:
-                graph.initialize_slice_plan(result.slice_plan)
-            else:
-                graph.initialize_slice_plan(None)
+            graph.initialize_slice_plan(result.slice_plan, enforce=enforce_slice_plan)
         elif algo_name_lower == "fgp_tabu":
             from outside.fgp_tabu import fgp_tabu
 
@@ -359,12 +361,11 @@ def main(config: dict[str, Any]):
 
             result = fgp_tabu(graph, **algo_params)
 
+            print("slice_plan len", 0 if result.slice_plan is None else len(result.slice_plan))
+
             gate_partition_for_run = result.gate_partition_by_pz
             gate_assignment = result.gate_assignment
-            if enforce_slice_plan:
-                graph.initialize_slice_plan(result.slice_plan)
-            else:
-                graph.initialize_slice_plan(None)
+            graph.initialize_slice_plan(result.slice_plan, enforce=enforce_slice_plan)
         elif algo_name_lower in {"tdag", "fgp_tdag"}:
             from outside.tdag import compute_gate_partition_tdag
 
@@ -391,9 +392,7 @@ def main(config: dict[str, Any]):
     else:
         graph.initialize_slice_plan(None)
 
-    slice_plan_for_run = graph.slice_plan if enforce_slice_plan else None
-    if not enforce_slice_plan:
-        graph.initialize_slice_plan(None)
+    slice_plan_for_run = graph.slice_plan
 
     graph.gate_pz_assignment = gate_assignment
     graph.current_gate_by_pz = {}
@@ -514,19 +513,21 @@ if __name__ == "__main__":
         return False
     
     # Meta study configuration
-    clear_prev = False
+    clear_prev = True
     #unique_id = "num_pz_sweep_20ions_4411_cap3"
-    unique_id = "global collection"
+    unique_id = "mzm_comparison"
 
     meta_study_config = {
         # Core architecture parameters
-        'num_ions': [6,8,10,12,15,20,30,40,50,60],
+        'num_ions': [6,8,10,12,15,20],
         'num_pzs': [4],
         'ions_per_pz': [3],
-        'grid_size': [6],
+        'grid_size': [5],
         'mz_trap_size': [1],
+        'pz_numbers_to_use': [[f"pz{pz}" for pz in [1,2,3,4]]],  # Using MZ_0 to MZ_3
         'use_dag': [True, False],
         'enforce_slice_plan': [False],
+        'enable_memory_zone_manager': [True, False],
         'save' : [False],
         'plot' : [False],
         'gate_density': [(0.5, 0.5)],
@@ -678,6 +679,8 @@ if __name__ == "__main__":
                 'plot': lambda v: v,
                 'grid_size': ('arch', lambda v: [v, v, run_params['mz_trap_size'], run_params['mz_trap_size']]),
                 'gate_density': lambda v: v,
+                'enable_memory_zone_manager': lambda v: v,
+                'pz_numbers_to_use': lambda v: v,
             }
             
             # Apply direct parameter mappings

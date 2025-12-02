@@ -15,6 +15,7 @@ DEBUG_FLAG = bool(int(os.getenv("IONSHUTTLER_DEBUG_MEMORY_MANAGER", "0")))
 
 # Limit how many opportunistic moves each PZ can request per timestep
 _MAX_MOVES_PER_PZ = 10
+_SLICE_LOOKAHEAD = 1  # how many future slices (in addition to current) to consider for staging
 
 def apply_memory_zone_manager(
     graph: Graph,
@@ -37,6 +38,9 @@ def apply_memory_zone_manager(
     if plan_active and current_plan is not None:
         for ions in current_plan.qubits_by_pz.values():
             busy_ions.update(ions)
+    #print("current_plan:", current_plan)
+    slice_ions_by_pz = _collect_slice_ions(graph, current_plan, lookahead=_SLICE_LOOKAHEAD) if plan_active else {}
+    #print("SLICE IONS BY PZ:", slice_ions_by_pz)
 
     if DEBUG_FLAG:
         ts_str = f"t={timestep} " if timestep is not None else ""
@@ -54,6 +58,9 @@ def apply_memory_zone_manager(
                 pass#print(f"[mzm] pz={pz.name} considering ion {ion}")
             if moves_added >= _MAX_MOVES_PER_PZ:
                 break
+            slice_filter = slice_ions_by_pz.get(pz.name)
+            if slice_filter is not None and ion not in slice_filter:
+                continue
             if not _ion_is_idle_candidate(graph, ion, pz, busy_ions):
                 continue
 
@@ -109,7 +116,7 @@ def apply_memory_zone_manager(
 
             moves_added += 1
             if DEBUG_FLAG:
-                print(f"[mzm] pz={pz.name} added move {ion}: {current_edge} -> {next_edge}")
+                print(f"[mzm] pz={pz.name} ADDED MOVE for ion {ion}: {current_edge} -> {next_edge}")
 
     return extra_cycles
 
@@ -159,3 +166,22 @@ def _ion_is_idle_candidate(graph: Graph, ion: int, pz: ProcessingZone, busy_ions
         return False
     edge_idx = get_idx_from_idc(graph.idc_dict, current_edge)
     return _edge_is_memory_edge(graph, pz, edge_idx)
+
+
+def _collect_slice_ions(graph: Graph, current_plan: SlicePlan | None, lookahead: int) -> dict[str, set[int]]:
+    """Collect ions per PZ appearing in the current slice and the next few slices."""
+
+    
+    if graph.slice_plan is None or current_plan is None:
+        return {}
+
+    result: dict[str, set[int]] = {pz.name: set() for pz in graph.pzs}
+    slice_plan = graph.slice_plan
+    start = graph.current_slice_index
+    end = min(len(slice_plan), start + 1 + max(0, lookahead))
+    for idx in range(start, end):
+        slice_info = slice_plan[idx]
+        for pz_name, ions in slice_info.qubits_by_pz.items():
+            if pz_name in result:
+                result[pz_name].update(ions)
+    return result
