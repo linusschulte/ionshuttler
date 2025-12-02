@@ -69,6 +69,34 @@ def _extract_legacy_metrics(output: str) -> tuple[int, timedelta]:
         raise RuntimeError(f"{msg}\nFull output:\n{output}")
     return final_timesteps, cpu_time
 
+def _calculate_timestep_lower_bound(graph, slice_plan: list[list[int]] | None = None) -> int :
+    
+    timestep_lower_bound = 0
+    
+    if slice_plan:
+        for slice in slice_plan:
+            gate_ids = [v for k,v in slice.gates_by_pz.items()]
+            gate_ids = [gid for sublist in gate_ids for gid in sublist]
+            
+            gate_infos = [graph.gate_info[gid] for gid in gate_ids]
+
+            if any(len(gate_info.qubits) > 1 for gate_info in gate_infos):
+                timestep_lower_bound += 3  # Skip if any gate info is missing
+            else:
+                timestep_lower_bound += 1
+    else:
+        for gate_id in graph.sequence:
+            qubits = graph.gate_info[gate_id].qubits
+            if len(qubits) > 1:
+                timestep_lower_bound += 3
+            else:
+                timestep_lower_bound += 1
+        
+        timestep_lower_bound = timestep_lower_bound // len(graph.pzs)  # Initial placement overhead
+    
+
+    return timestep_lower_bound
+
 
 def run_legacy_cli_with_config(config: dict[str, Any]) -> tuple[int, timedelta]:
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp_file:
@@ -349,8 +377,11 @@ def main(config: dict[str, Any]):
             gate_partition_for_run = result.gate_partition_by_pz
             gate_assignment = result.gate_assignment
             graph.initialize_slice_plan(result.slice_plan, enforce=enforce_slice_plan)
-        elif algo_name_lower == "fgp_tabu":
-            from outside.fgp_tabu import fgp_tabu
+        elif algo_name_lower in {"fgp_tabu", "fgp_kl"}:
+            if algo_name_lower == "fgp_tabu":
+                from outside.fgp_tabu import fgp_tabu as gate_partitioner
+            else:
+                from outside.fgp_kl import fgp_kl as gate_partitioner
 
             if "num_pzs" not in algo_params:
                 algo_params["num_pzs"] = config.get("num_pzs", 1)
@@ -359,9 +390,7 @@ def main(config: dict[str, Any]):
             if "lookahead_weight_factor" not in algo_params:
                 algo_params["lookahead_weight_factor"] = 1.0
 
-            result = fgp_tabu(graph, **algo_params)
-
-            print("slice_plan len", 0 if result.slice_plan is None else len(result.slice_plan))
+            result = gate_partitioner(graph, **algo_params)
 
             gate_partition_for_run = result.gate_partition_by_pz
             gate_assignment = result.gate_assignment
@@ -396,6 +425,9 @@ def main(config: dict[str, Any]):
 
     graph.gate_pz_assignment = gate_assignment
     graph.current_gate_by_pz = {}
+
+    timesteps_lower_bound = _calculate_timestep_lower_bound(graph, slice_plan=None)#graph.slice_plan)
+    print("Lower bound on timesteps:", timesteps_lower_bound)
 
     #if gate_assignment:
     #    print("Gate assignment to PZs:")
@@ -433,7 +465,7 @@ def main(config: dict[str, Any]):
     #print(f"Total CPU time: {cpu_time}")
     #print(f"processed_gates_counter", processed_gates_counter)
 
-    return final_timesteps, cpu_time#, processed_gates_counter
+    return final_timesteps, cpu_time, timesteps_lower_bound #, processed_gates_counter
 
 
 def execute_run(config: dict[str, Any]) -> tuple[int, timedelta]:
@@ -513,24 +545,24 @@ if __name__ == "__main__":
         return False
     
     # Meta study configuration
-    clear_prev = True
+    clear_prev = False
     #unique_id = "num_pz_sweep_20ions_4411_cap3"
-    unique_id = "mzm_comparison"
+    unique_id = "partitioner_comparison_num_ions"
 
     meta_study_config = {
         # Core architecture parameters
-        'num_ions': [6,8,10,12,15,20],
-        'num_pzs': [4],
-        'ions_per_pz': [3],
-        'grid_size': [5],
+        'num_ions': [10,12,15,20,25,30,40],
+        'num_pzs': [8],
+        'ions_per_pz': [2],
+        'grid_size': [6],
         'mz_trap_size': [1],
-        'pz_numbers_to_use': [[f"pz{pz}" for pz in [1,2,3,4]]],  # Using MZ_0 to MZ_3
+        'pz_numbers_to_use': [[5,6,7,8,13,14,15,16]],  # Using MZ_0 to MZ_3
         'use_dag': [True, False],
         'enforce_slice_plan': [False],
         'enable_memory_zone_manager': [True, False],
         'save' : [False],
         'plot' : [False],
-        'gate_density': [(0.5, 0.5)],
+        #'gate_density': [(0.5,0.5)],
         #'gate_density': [(0.0,1.0), (0.1,0.9), (0.2,0.8), (0.3,0.7), (0.4,0.6), (0.5,0.5), (0.6,0.4), (0.7,0.3), (0.8,0.2), (0.9,0.1), (1.0,0.0)],
         #'gate_density': [(0.1,0.1), (0.25,0.25), (0.5,0.5), (0.75, 0.75), (1.0, 1.0)], 
 
@@ -540,10 +572,23 @@ if __name__ == "__main__":
             {
                 'name': 'fgp_tabu',
                 'params': {
-                    #'lookahead_weight_factor': [0.1, 0.5, 1.0, 2.0],
-                    #'balance_penalty': [0.01, 5.0],#[1.75]
-                    #'sigma': [0.01, 5.0],#[1.0]
-                    #'distance_weight_factor': [0.1,4.0],
+                    'lookahead_weight_factor': [1.0],#[0.6],
+                    'balance_penalty': [1.0],#[0.6],
+                    'sigma': [1.0],#[5.0],
+                    'distance_weight_factor': [1.0],#[1.5],
+                },
+                '_sampling': {
+                    'method': 'lhs',
+                    'num_samples': 50,
+                },
+            },
+            {
+                'name': 'fgp_kl',
+                'params': {
+                    'lookahead_weight_factor': [1.0],#[0.85],
+                    'balance_penalty': [1.0],#[4.5],
+                    'sigma': [1.0],#[4.5]
+                    'distance_weight_factor': [1.0],#[3.75],
                 },
                 '_sampling': {
                     'method': 'lhs',
@@ -590,6 +635,7 @@ if __name__ == "__main__":
             if algo_name == 'none':
                 # enforce_slice_plan makes no sense for no slice plan
                 base_dict['enforce_slice_plan'] = False
+                base_dict['enable_memory_zone_manager'] = False
                 # No algorithm parameters to expand
                 params_dict = base_dict.copy()
                 params_dict['partitioning_algorithm'] = 'none'
@@ -722,7 +768,7 @@ if __name__ == "__main__":
                 run_group.attrs[key] = value
             
             try:
-                final_timesteps, cpu_time = execute_run(config)
+                final_timesteps, cpu_time, timesteps_lower_bound = execute_run(config)
                 if final_timesteps >= config.get("max_timesteps", 100000) - 1:
                     run_group.attrs['success'] = False
                     run_group.attrs['error_message'] = f"Simulation reached max timesteps ({final_timesteps})"
@@ -730,6 +776,7 @@ if __name__ == "__main__":
                     run_group.attrs['success'] = True
                     run_group.attrs['final_timesteps'] = final_timesteps
                 run_group.attrs['cpu_time_seconds'] = cpu_time.total_seconds()
+                run_group.attrs['timesteps_lower_bound'] = timesteps_lower_bound
                 
                 
                 if run_group.attrs['success']:
@@ -757,3 +804,4 @@ if __name__ == "__main__":
     print(f"Results saved to {results_file}")
     if best_params is not None:
         print(f"Best run achieved {best_timesteps} timesteps with parameters: {best_params}")
+

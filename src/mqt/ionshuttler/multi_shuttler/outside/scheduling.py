@@ -572,6 +572,54 @@ def find_movable_cycles(
     priority_queue: dict[int, str],
     cycle_or_paths: str,
 ) -> list[int]:
+    USE_ITERATIVE_CONFLICTS = False  # toggle for iterative refinement; default off
+
+    if USE_ITERATIVE_CONFLICTS:
+        # Work on a local copy so we can mark blocked cycles as stop-moves without mutating the caller unexpectedly.
+        working_cycles: dict[int, list[Edge]] = dict(all_cycles)
+        ordered_ions = list(priority_queue.keys())
+        selected: list[int] = []
+
+        # Allow a small number of refinement passes to reflect newly blocked cycles in conflict detection.
+        for _ in range(2):
+            if cycle_or_paths == "Cycles":
+                nonfree_cycles = find_conflict_cycle_idxs(graph, working_cycles)
+            else:
+                nonfree_cycles = find_nonfree_paths(graph, working_cycles)
+
+            selected = []
+            changed = False
+            for ion in ordered_ions:
+                cycle = working_cycles.get(ion)
+                if cycle is None:
+                    continue
+                has_conflict = any(
+                    (ion, other) in nonfree_cycles or (other, ion) in nonfree_cycles for other in selected
+                )
+                if has_conflict:
+                    # Turn this into a stop move to keep the edge occupied for later passes
+                    stop_cycle = [cycle[0], cycle[0]] if cycle else None
+                    if stop_cycle is not None and working_cycles.get(ion) != stop_cycle:
+                        working_cycles[ion] = stop_cycle
+                        changed = True
+                    continue
+                selected.append(ion)
+
+            if not changed:
+                break
+
+        # Propagate any stop-move updates back to all_cycles
+        all_cycles.update(working_cycles)
+
+        if DEBUG_FLAG:
+            print(
+                "FREE CYCLES:",
+                [str(idx) + ": " + str(cycle) for idx, cycle in sorted(all_cycles.items()) if idx in selected],
+            )
+
+        return selected
+
+    # Legacy one-pass selection
     if cycle_or_paths == "Cycles":
         nonfree_cycles = find_conflict_cycle_idxs(graph, all_cycles)
     else:
@@ -597,7 +645,7 @@ def find_movable_cycles(
             free_cycle_seq_idxs.append(seq_cyc)
 
     if DEBUG_FLAG:
-        print("FREE CYCLES:", free_cycle_seq_idxs)
+        print("FREE CYCLES:", [str(idx) + ": " + str(cycle) for idx, cycle in sorted(all_cycles.items()) if idx in free_cycle_seq_idxs])
 
     return free_cycle_seq_idxs
 
