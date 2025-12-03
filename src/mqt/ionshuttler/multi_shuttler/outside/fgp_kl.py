@@ -99,6 +99,57 @@ def fgp_kl(
         pz_distance_map=pz_distance_map,
     )
 
+    if DEBUG_FLAG:
+        print("Overview:")
+        for idx, slice in enumerate(partition_output["peeled_subslices"]):
+            print(f"Slice {idx+1}:", partition_output["slice_plan"][idx])
+            for subslice in slice[:1]:
+                all_qubits = []
+                for partition in subslice["partitions"]:
+                    all_qubits_partition = []
+                    for v in partition.values():
+                        all_qubits_partition.extend(v)
+                    all_qubits.append(all_qubits_partition)
+                print(f"hidden partitioning: {all_qubits}")
+                    
+                #for key, value in subslice.items():
+                #    printu
+                #    pz = value.get("processing_zone", set())
+                #    mz = value.get("memory_zone", set())
+                #    tbd = value.get("tbd", set())
+                #    all_qubits = pz + mz + tbd
+                #    all_qubits_partitions.append(all_qubits)
+                #print(f"Subslices: {all_qubits_partitions}")
+        
+
+        for idx, result in []: #enumerate(partition_output["partition_results"]):
+            print(f"\n=== Slice {idx+1} ===")
+            print(f"Gates in slice: {partition_output['time_slices'][idx]}")
+            
+            if result.assignment is not None:
+                print("\nQubit assignments by PZ:")
+                qubit_to_pz = {}
+                for sn in result.supernodes:
+                    pz = result.assignment[sn.id]
+                    for q in sn.qubits:
+                        qubit_to_pz[q] = pz
+                
+                for pz_idx in range(num_pzs):
+                    qubits_in_pz = sorted([q for q, p in qubit_to_pz.items() if p == pz_idx])
+                    print(f"  PZ{pz_idx}: {qubits_in_pz}")
+                
+                print("\nGate assignments by PZ:")
+                for pz_idx in range(num_pzs):
+                    gates_in_pz = []
+                    for gate_id in partition_output["time_slices"][idx]:
+                        gate_qubits = gate_info[gate_id].qubits
+                        if gate_qubits and qubit_to_pz.get(gate_qubits[0]) == pz_idx:
+                            gates_in_pz.append(gate_id)
+                    print(f"  PZ{pz_idx}: {gates_in_pz}")
+                
+                if result.cluster_loads:
+                    print(f"\nCluster loads: {result.cluster_loads}")
+
     assignments: list[list[int]] = partition_output["qubit_assignments"]  # type: ignore[assignment]
     slice_plan: list[SlicePlan] = partition_output["slice_plan"]  # type: ignore[assignment]
     gate_partition_by_pz: dict[str, list[int]] = partition_output["gate_partition_by_pz"]  # type: ignore[assignment]

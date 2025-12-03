@@ -127,8 +127,17 @@ def fgp_tabu(
 
     if DEBUG_FLAG:
         print("Overview:")
-        for idx, slice in enumerate(partition_output["slice_plan"]):
-            print(f"Slice {idx+1}", slice)
+        for idx, slice in enumerate(partition_output["peeled_subslices"]):
+            print(f"Slice {idx+1}:", partition_output["slice_plan"][idx])
+            for subslice in slice[:1]:
+                all_qubits = []
+                for partition in subslice["partitions"]:
+                    all_qubits_partition = []
+                    for v in partition.values():
+                        all_qubits_partition.extend(v)
+                    all_qubits.append(all_qubits_partition)
+                print(f"hidden partitioning: {all_qubits}")
+
         for idx, result in []: #enumerate(partition_output["partition_results"]):
             print(f"\n=== Slice {idx+1} ===")
             print(f"Gates in slice: {partition_output['time_slices'][idx]}")
@@ -1110,7 +1119,16 @@ def _compute_cost(
         if assignment[su] != assignment[sv]:
             lookahead_cut_penalty += weight
 
-    required_qubits = set(result.required_unary)
+    # Balance on all qubits that appear in required/unary/lookahead data
+    required_qubits: set[int] = set(result.required_unary)
+    for u, v in result.required_edges:
+        required_qubits.update((u, v))
+    required_qubits.update(result.lookahead_unary.keys())
+    for su, sv in result.lookahead_edges:
+        if 0 <= su < len(result.supernodes):
+            required_qubits.update(result.supernodes[su].qubits)
+        if 0 <= sv < len(result.supernodes):
+            required_qubits.update(result.supernodes[sv].qubits)
     required_qubit_load = [0.0] * num_pzs
     lookahead_qubit_load = [0.0] * num_pzs
     for q in required_qubits:
