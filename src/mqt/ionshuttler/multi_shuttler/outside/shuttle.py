@@ -472,6 +472,8 @@ def main(
             pz_executing_gate_order = [
                 pz.name for pz in graph.pzs if current_plan.gates_by_pz.get(pz.name)
             ]
+        elif use_dag_now:
+            pz_executing_gate_order = list(next_processable_gate_nodes.keys())
         else:
             pz_executing_gate_order = find_pz_order(graph, gate_info_list)
 
@@ -480,7 +482,19 @@ def main(
         if plan_active and current_plan is not None:
             priority_queue, next_gate_at_pz_dict = _build_priority_queue_from_plan(graph, current_plan)
         else:
-            priority_queue, next_gate_at_pz_dict = create_priority_queue(graph, pz_executing_gate_order)
+            sequence_override = None
+            if use_dag_now:
+                gate_id_lookup = getattr(graph, "dag_gate_id_lookup", {})
+                sequence_override = [
+                    gate_id_lookup.get(node.node_id)
+                    for node in next_processable_gate_nodes.values()
+                    if gate_id_lookup.get(node.node_id) is not None
+                ]
+            priority_queue, next_gate_at_pz_dict = create_priority_queue(
+                graph,
+                pz_executing_gate_order,
+                sequence_override=sequence_override,
+            )
         graph.current_gate_by_pz = {
             pz_name: gate_id for pz_name, gate_id in next_gate_at_pz_dict.items() if gate_id is not None
         }
