@@ -543,23 +543,51 @@ if __name__ == "__main__":
             if match:
                 return True
         return False
+
+
+    # Declare partitioning algorithm parameters
+    fgp_tabu = {
+        'name': 'fgp_tabu',
+        'params': {
+            'balance_penalty': [1],  #[0.6],
+            'sigma': [1],  #[5.0],
+            'lookahead_weight_factor': [3.5],  #[0.6],
+            'distance_weight_factor': [1.5]  #[1.5],
+        },
+        '_sampling': {
+            'method': 'lhs',
+            'num_samples': 30,
+        },
+    }
+    fgp_kl = {
+        'name': 'fgp_kl',
+        'params': {
+            'lookahead_weight_factor': [1.0],  #[0.85],
+            'balance_penalty': [5.0],  #[4.5],
+            'sigma': [1.0],  #[4.5]
+            'distance_weight_factor': [1.0],  #[3.75],
+        },
+        '_sampling': {'method': 'lhs', 'num_samples': 30},
+    }
+    fgp_roee = {'name': 'fgp_roee', 'params': {'sigma': [1.0]}}
+
     
     # Meta study configuration
-    clear_prev = False
+    clear_prev = True
     #unique_id = "num_pz_sweep_20ions_4411_cap3"
-    unique_id = "partitioner_comparison_num_ions"
+    unique_id = "test"
 
     meta_study_config = {
         # Core architecture parameters
-        'num_ions': [10,12,15,20,25,30,40],
-        'num_pzs': [8],
-        'ions_per_pz': [2],
+        'num_ions': [8,12,16,20,24,30,40,60],
+        'num_pzs': [4],
+        'ions_per_pz': [4],
         'grid_size': [6],
         'mz_trap_size': [1],
-        'pz_numbers_to_use': [[5,6,7,8,13,14,15,16]],  # Using MZ_0 to MZ_3
+        'pz_numbers_to_use': [[5,6,7,8]],  # Using MZ_5 to MZ_8
         'use_dag': [True, False],
         'enforce_slice_plan': [False],
-        'enable_memory_zone_manager': [True, False],
+        'enable_memory_zone_manager': [False],
         'save' : [False],
         'plot' : [False],
         #'gate_density': [(0.5,0.5)],
@@ -569,34 +597,10 @@ if __name__ == "__main__":
         # Partitioning algorithm configurations
         'partitioning_algorithms': [
             {'name': 'none'},  # No partitioning
-            {
-                'name': 'fgp_tabu',
-                'params': {
-                    'lookahead_weight_factor': [1.0],#[0.6],
-                    'balance_penalty': [1.0],#[0.6],
-                    'sigma': [1.0],#[5.0],
-                    'distance_weight_factor': [1.0],#[1.5],
-                },
-                '_sampling': {
-                    'method': 'lhs',
-                    'num_samples': 50,
-                },
-            },
-            {
-                'name': 'fgp_kl',
-                'params': {
-                    'lookahead_weight_factor': [1.0],#[0.85],
-                    'balance_penalty': [1.0],#[4.5],
-                    'sigma': [1.0],#[4.5]
-                    'distance_weight_factor': [1.0],#[3.75],
-                },
-                '_sampling': {
-                    'method': 'lhs',
-                    'num_samples': 30,
-                },
-            },
-        ],
-        #'partitioning_algorithms': [{'name': 'none'}],
+            fgp_tabu,
+            fgp_kl,
+            #fgp_roee,
+        ]
     }
 
     if unique_id != "":
@@ -635,10 +639,10 @@ if __name__ == "__main__":
             if algo_name == 'none':
                 # enforce_slice_plan makes no sense for no slice plan
                 base_dict['enforce_slice_plan'] = False
-                base_dict['enable_memory_zone_manager'] = False
                 # No algorithm parameters to expand
                 params_dict = base_dict.copy()
                 params_dict['partitioning_algorithm'] = 'none'
+                params_dict['enable_memory_zone_manager'] = False
                 valid_combinations.append(params_dict)
             else:
                 # Generate all combinations of algorithm parameters
@@ -651,11 +655,13 @@ if __name__ == "__main__":
                     algo_param_names = list(algo_params.keys())
                     algo_param_values = [algo_params[k] for k in algo_param_names]
                     sampling_cfg = algo_config.get('sampling')
+                    params_to_sample = algo_config.get('params')
                     if sampling_cfg and sampling_cfg.get('method') == 'lhs':
                         num_samples = int(sampling_cfg.get('num_samples', 10))
-                        lower_bounds = np.array([min(vals) for vals in algo_param_values], dtype=float)
-                        upper_bounds = np.array([max(vals) for vals in algo_param_values], dtype=float)
-                        sampler = qmc.LatinHypercube(d=len(algo_param_names))
+                        lower_bounds = np.array([min(vals) for vals in params_to_sample.values()], dtype=float)
+                        upper_bounds = np.array([max(vals) for vals in params_to_sample.values()], dtype=float)
+                        print("LHS Sampling:", params_to_sample.keys(), "Samples:", num_samples)
+                        sampler = qmc.LatinHypercube(d=len(params_to_sample))
                         lhs_sample = sampler.random(num_samples)
                         scaled = qmc.scale(lhs_sample, lower_bounds, upper_bounds)
                         for sample_vals in scaled:
@@ -758,7 +764,7 @@ if __name__ == "__main__":
                 }
             
             print(f"\n=== Run {result_index + skipped - existing_runs + 1} / {total_combinations} new ===")
-            #print(f"Config: {run_params}")
+            print(f"Config: {run_params}")
             
             run_name = f'run_{result_index:04d}'
             run_group = results_group.create_group(run_name)
@@ -804,4 +810,3 @@ if __name__ == "__main__":
     print(f"Results saved to {results_file}")
     if best_params is not None:
         print(f"Best run achieved {best_timesteps} timesteps with parameters: {best_params}")
-
