@@ -91,6 +91,7 @@ def create_priority_queue(
     graph: Graph,
     pz_executing_gate_order: list[str],
     max_length: int = 10,
+    sequence_override: list[int] | None = None,
 ) -> tuple[dict[int, str], dict[str, int | None]]:
     """
     Create a priority queue based on a given graph and sequence of gates.
@@ -107,7 +108,7 @@ def create_priority_queue(
     """
     unique_sequence = OrderedDict()
     graph.next_gate_at_pz = {pz.name: None for pz in graph.pzs}
-    for gate_id in graph.sequence:
+    for gate_id in sequence_override or graph.sequence:
         qubits = graph.gate_qubits(gate_id)
         preferred_pz = graph.preferred_pz_for_gate(gate_id)
         if preferred_pz is not None and preferred_pz not in graph.pzs_name_map:
