@@ -90,7 +90,7 @@ def fgp_tabu(
 
     if not graph.sequence:
         gate_partition_by_pz = {pz.name: [] for pz in graph.pzs}
-        return FGPResult([], gate_partition_by_pz, {}, [], [])
+        return FGPResult([], gate_partition_by_pz, {}, [], [], time_slices=[])
 
     gate_info = graph.gate_info
     num_pzs = num_pzs or len(graph.pzs)
@@ -170,10 +170,24 @@ def fgp_tabu(
     slice_plan: list[SlicePlan] = partition_output["slice_plan"]  # type: ignore[assignment]
     gate_partition_by_pz: dict[str, list[int]] = partition_output["gate_partition_by_pz"]  # type: ignore[assignment]
     gate_assignment: dict[int, str] = partition_output["gate_assignment"]  # type: ignore[assignment]
+    time_slices: list[list[int]] = partition_output.get("time_slices", [])  # type: ignore[assignment]
+    pre_cost: float = sum(partition_output["pre_partitioning_costs"])  # type: ignore[assignment]
+    post_cost: float = sum(partition_output["post_partitioning_costs"])  # type: ignore[assignment]
 
     moves = _compute_moves(assignments)
+    move_distance_total = _compute_total_move_distance(moves, pz_positions, pz_distance_map)
 
-    return FGPResult(assignments, gate_partition_by_pz, gate_assignment, moves, slice_plan)
+    return FGPResult(
+        assignments,
+        gate_partition_by_pz,
+        gate_assignment,
+        moves,
+        slice_plan,
+        pre_cost,
+        post_cost,
+        time_slices=time_slices,
+        move_distance_total=move_distance_total,
+    )
 
 
 def partition_slice(
@@ -525,6 +539,27 @@ def _compute_moves(assignments: list[list[int]]) -> list[list[tuple[int, int, in
     return moves
 
 
+def _compute_total_move_distance(
+    moves: list[list[tuple[int, int, int]]],
+    pz_positions: Sequence[ProcessingZone | None] | None,
+    pz_distance_map: dict[tuple[str, str], float] | None,
+) -> float:
+    """Sum distance of all moves between consecutive slices."""
+    if not moves:
+        return 0.0
+    total = 0.0
+    for slice_moves in moves:
+        for _, src, dst in slice_moves:
+            dist = 1.0
+            if pz_positions and 0 <= src < len(pz_positions) and 0 <= dst < len(pz_positions):
+                src_pz = pz_positions[src]
+                dst_pz = pz_positions[dst]
+                if src_pz and dst_pz:
+                    dist = get_pz_distance(src_pz, dst_pz, pz_distance_map)
+            total += dist
+    return total
+
+
 def _build_qubit_assignment(
     result: ContractionResult,
     num_qubits: int,
@@ -765,6 +800,8 @@ def _run_fgp_tabu(
             subslice if subslice is not None else [] for subslice in peeled_subslices
         ],
         "time_slices": time_slices,
+        "pre_partitioning_costs": pre_tabu_costs,
+        "post_partitioning_costs": post_tabu_costs,
     }
 
 

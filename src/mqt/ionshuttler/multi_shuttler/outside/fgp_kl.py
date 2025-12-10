@@ -69,7 +69,7 @@ def fgp_kl(
 
     if not graph.sequence:
         gate_partition_by_pz = {pz.name: [] for pz in graph.pzs}
-        return FGPResult([], gate_partition_by_pz, {}, [], [])
+        return FGPResult([], gate_partition_by_pz, {}, [], [], time_slices=[])
 
     gate_info = graph.gate_info
     num_pzs = num_pzs or len(graph.pzs)
@@ -154,10 +154,18 @@ def fgp_kl(
     slice_plan: list[SlicePlan] = partition_output["slice_plan"]  # type: ignore[assignment]
     gate_partition_by_pz: dict[str, list[int]] = partition_output["gate_partition_by_pz"]  # type: ignore[assignment]
     gate_assignment: dict[int, str] = partition_output["gate_assignment"]  # type: ignore[assignment]
+    time_slices: list[list[int]] = partition_output.get("time_slices", [])  # type: ignore[assignment]
 
     moves = _compute_moves(assignments)
 
-    return FGPResult(assignments, gate_partition_by_pz, gate_assignment, moves, slice_plan)
+    return FGPResult(
+        assignments,
+        gate_partition_by_pz,
+        gate_assignment,
+        moves,
+        slice_plan,
+        time_slices=time_slices,
+    )
 
 
 def partition_slice_kl(

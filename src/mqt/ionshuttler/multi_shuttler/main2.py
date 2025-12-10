@@ -28,6 +28,7 @@ from outside.graph_creator import GraphCreator, PZCreator
 from outside.partition import get_partition
 from outside.processing_zone import ProcessingZone
 from outside.shuttle import main as run_shuttle_main
+from outside.compilation import _load_qasm_circuit
 
 from outside.helper import generate_pzs, recalculate_architecture_config
 
@@ -225,7 +226,7 @@ def main(config: dict[str, Any]):
 
     try:
         if plot_flag:
-            qc = QuantumCircuit.from_qasm_file(str(qasm_file_path))
+            qc = _load_qasm_circuit(qasm_file_path)
             qc.draw(output = "mpl", filename=f"outputs/circuits/{algorithm_name}_{num_ions}_circuit.png")
     except ImportError:
         print("Warning: qiskit not installed, skipping circuit visualization")
@@ -254,6 +255,7 @@ def main(config: dict[str, Any]):
     gate_partition_for_run: dict[str, list[int]] | None = None
     gate_assignment: dict[int, str] = {}
     seq_length = len(graph.sequence)
+    partition_result: object | None = None
     
     if PRINT_DEBUG:
         print(f"Number of ions: {num_ions}")
@@ -377,6 +379,7 @@ def main(config: dict[str, Any]):
             gate_partition_for_run = result.gate_partition_by_pz
             gate_assignment = result.gate_assignment
             graph.initialize_slice_plan(result.slice_plan, enforce=enforce_slice_plan)
+            partition_result = result
         elif algo_name_lower in {"fgp_tabu", "fgp_kl"}:
             if algo_name_lower == "fgp_tabu":
                 from outside.fgp_tabu import fgp_tabu as gate_partitioner
@@ -395,6 +398,7 @@ def main(config: dict[str, Any]):
             gate_partition_for_run = result.gate_partition_by_pz
             gate_assignment = result.gate_assignment
             graph.initialize_slice_plan(result.slice_plan, enforce=enforce_slice_plan)
+            partition_result = result
         elif algo_name_lower in {"tdag", "fgp_tdag"}:
             from outside.tdag import compute_gate_partition_tdag
 
@@ -465,14 +469,41 @@ def main(config: dict[str, Any]):
     #print(f"Total CPU time: {cpu_time}")
     #print(f"processed_gates_counter", processed_gates_counter)
 
-    return final_timesteps, cpu_time, timesteps_lower_bound #, processed_gates_counter
+    cost_before = getattr(partition_result, "cost_before", None)
+    cost_after = getattr(partition_result, "cost_after", None)
+    time_slices_info = getattr(partition_result, "time_slices", [])
+    qubit_assignments = getattr(partition_result, "assignments", [])
+    move_distance_total = getattr(partition_result, "move_distance_total", None)
+
+    return (
+        final_timesteps,
+        cpu_time,
+        timesteps_lower_bound,
+        cost_before,
+        cost_after,
+        time_slices_info,
+        qubit_assignments,
+        move_distance_total,
+    )
 
 
-def execute_run(config: dict[str, Any]) -> tuple[int, timedelta]:
+def execute_run(
+    config: dict[str, Any],
+) -> tuple[
+    int,
+    timedelta,
+    int,
+    float | None,
+    float | None,
+    list[list[int]],
+    list[list[int]],
+    float | None,
+]:
     config_for_run = config.copy()
     if should_use_legacy_cli(config_for_run):
         print("Using legacy CLI entrypoint (mqt-ionshuttler-heuristic) for this configuration.")
-        return run_legacy_cli_with_config(config_for_run)
+        final_ts, cpu_time = run_legacy_cli_with_config(config_for_run)
+        return final_ts, cpu_time, 0, None, None, [], [], None
     return main(config_for_run)
 
     # # --- Benchmarking Output ---
@@ -544,48 +575,62 @@ if __name__ == "__main__":
                 return True
         return False
 
+    def _write_json_dataset(group: h5py.Group, name: str, payload: object) -> None:
+        """Persist small structured payloads (lists/dicts) as UTF-8 JSON datasets."""
+        try:
+            if name in group:
+                del group[name]
+            dtype = h5py.string_dtype(encoding="utf-8")
+            group.create_dataset(name, data=np.array(json.dumps(payload), dtype=dtype))
+        except Exception as exc:  # pragma: no cover - best-effort diagnostic
+            print(f"Warning: could not store dataset '{name}': {exc}")
+
+    #################################################################################################################
+    # Meta study configuration
+    clear_prev = False
+    #unique_id = "generated_0.71_0.7_num_ions_4pzs"
+    #unique_id = "balance_distance_sweep_20ions_4pzs"
+    #unique_id = "num_pzs_mean_std_allswept_4pzs"
+    unique_id = "quantinuum_num_ions_4pzs"
+    
 
     # Declare partitioning algorithm parameters
     fgp_tabu = {
         'name': 'fgp_tabu',
         'params': {
-            'balance_penalty': [1],  #[0.6],
-            'sigma': [1],  #[5.0],
-            'lookahead_weight_factor': [3.5],  #[0.6],
-            'distance_weight_factor': [1.5]  #[1.5],
+            'balance_penalty': np.linspace(0.1, 5, 40),  #[0.6],
+            'sigma': np.linspace(0.1, 5, 20),  #[5.0],
+            'lookahead_weight_factor': np.linspace(0.1, 5, 20),  #[0.6],
+            'distance_weight_factor': np.linspace(0.1, 5, 20)  #[1.5],
         },
-        '_sampling': {
+        'sampling': {
             'method': 'lhs',
-            'num_samples': 30,
+            'num_samples': 10,
         },
     }
     fgp_kl = {
         'name': 'fgp_kl',
         'params': {
-            'lookahead_weight_factor': [1.0],  #[0.85],
-            'balance_penalty': [5.0],  #[4.5],
-            'sigma': [1.0],  #[4.5]
-            'distance_weight_factor': [1.0],  #[3.75],
+            'lookahead_weight_factor': [2.902851755464501],  #[0.85],
+            'balance_penalty': [4.516752],  #[4.5],
+            'sigma': [1.6113372786564444],  #[4.5]
+            'distance_weight_factor': [2.1438317591],  #[3.75],
         },
-        '_sampling': {'method': 'lhs', 'num_samples': 30},
+        'sampling': {'method': 'lhs', 'num_samples': 30},
     }
-    fgp_roee = {'name': 'fgp_roee', 'params': {'sigma': [1.0]}}
+    fgp_roee = {'name': 'fgp_roee', 'params': {'sigma': [0.01,5.0]}, 'sampling': {'method': 'lhs', 'num_samples': 20},}
 
-    
-    # Meta study configuration
-    clear_prev = True
-    #unique_id = "num_pz_sweep_20ions_4411_cap3"
-    unique_id = "test"
+
 
     meta_study_config = {
         # Core architecture parameters
-        'num_ions': [8,12,16,20,24,30,40,60],
+        'num_ions': [10,20,30],
         'num_pzs': [4],
-        'ions_per_pz': [4],
+        'ions_per_pz': [3],
         'grid_size': [6],
         'mz_trap_size': [1],
-        'pz_numbers_to_use': [[5,6,7,8]],  # Using MZ_5 to MZ_8
-        'use_dag': [True, False],
+        'pz_numbers_to_use': [[9,10,11,12]], 
+        'use_dag': [True],
         'enforce_slice_plan': [False],
         'enable_memory_zone_manager': [False],
         'save' : [False],
@@ -598,7 +643,7 @@ if __name__ == "__main__":
         'partitioning_algorithms': [
             {'name': 'none'},  # No partitioning
             fgp_tabu,
-            fgp_kl,
+            #fgp_kl,
             #fgp_roee,
         ]
     }
@@ -630,6 +675,10 @@ if __name__ == "__main__":
     # Iterate through all base parameter combinations
     for base_combo in product(*base_param_values):
         base_dict = dict(zip(base_param_names, base_combo))
+
+        # If num_pzs is omitted, infer it from the provided PZ numbers for this combo
+        if "num_pzs" not in base_dict and "pz_numbers_to_use" in base_dict:
+            base_dict["num_pzs"] = len(base_dict["pz_numbers_to_use"])
         
         # For each partitioning algorithm configuration
         for algo_config in meta_study_config['partitioning_algorithms']:
@@ -660,7 +709,7 @@ if __name__ == "__main__":
                         num_samples = int(sampling_cfg.get('num_samples', 10))
                         lower_bounds = np.array([min(vals) for vals in params_to_sample.values()], dtype=float)
                         upper_bounds = np.array([max(vals) for vals in params_to_sample.values()], dtype=float)
-                        print("LHS Sampling:", params_to_sample.keys(), "Samples:", num_samples)
+                        #print("LHS Sampling:", params_to_sample.keys(), "Samples:", num_samples)
                         sampler = qmc.LatinHypercube(d=len(params_to_sample))
                         lhs_sample = sampler.random(num_samples)
                         scaled = qmc.scale(lhs_sample, lower_bounds, upper_bounds)
@@ -774,7 +823,19 @@ if __name__ == "__main__":
                 run_group.attrs[key] = value
             
             try:
-                final_timesteps, cpu_time, timesteps_lower_bound = execute_run(config)
+                (
+                    final_timesteps,
+                    cpu_time,
+                    timesteps_lower_bound,
+                    cost_before,
+                    cost_after,
+                    time_slices_info,
+                    qubit_assignments,
+                    move_distance_total,
+                ) = execute_run(config)
+
+                print("move_distance_total:", move_distance_total)
+
                 if final_timesteps >= config.get("max_timesteps", 100000) - 1:
                     run_group.attrs['success'] = False
                     run_group.attrs['error_message'] = f"Simulation reached max timesteps ({final_timesteps})"
@@ -783,6 +844,15 @@ if __name__ == "__main__":
                     run_group.attrs['final_timesteps'] = final_timesteps
                 run_group.attrs['cpu_time_seconds'] = cpu_time.total_seconds()
                 run_group.attrs['timesteps_lower_bound'] = timesteps_lower_bound
+                run_group.attrs['cost_before'] = cost_before if cost_before is not None else np.nan
+                run_group.attrs['cost_after'] = cost_after if cost_after is not None else np.nan
+                if time_slices_info:
+                    _write_json_dataset(run_group, "time_slices", time_slices_info)
+                if qubit_assignments:
+                    _write_json_dataset(run_group, "qubit_assignments", qubit_assignments)
+                run_group.attrs["move_distance_total"] = (
+                    float(move_distance_total) if move_distance_total is not None else np.nan
+                )
                 
                 
                 if run_group.attrs['success']:

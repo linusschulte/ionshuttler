@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Iterator
 
 import math
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from .graph import Graph
     from .types import GateInfo
 
-DEBUG_ENABLED = 1
+DEBUG_ENABLED = 0
 
 if DEBUG_ENABLED:
     import matplotlib.pyplot as plt
@@ -41,6 +41,14 @@ class FGPResult:
     """Non-local moves required between successive slices (qubit, src, dst)."""
     slice_plan: list[SlicePlan]
     """Per-slice plan containing qubit and gate assignments for each processing zone."""
+    cost_before: float | None = 0.0
+    """Partitioning cost function before partitioning."""
+    cost_after: float | None = 0.0
+    """Partitioning cost function after partitioning."""
+    time_slices: list[list[int]] = field(default_factory=list)
+    """Gate ids grouped by slice order, as constructed during partitioning."""
+    move_distance_total: float | None = None
+    """Sum of move distances between consecutive slices (None if not computed)."""
 
 
 def _debug(*args: object) -> None:
@@ -55,7 +63,7 @@ def fgp_roee(
     capacity: int | None = None,
     sigma: float = 1.0,
     large_weight: float = 1e6,
-    max_iterations_multiplier: int = 10,
+    max_iterations_multiplier: int = 25,
     aggregate_slices: int = 1,
 ) -> FGPResult:
     """Derive a gate partition using a simplified FGP-rOEE heuristic.
@@ -85,7 +93,7 @@ def fgp_roee(
 
     if not graph.sequence:
         gate_partition_by_pz = {pz.name: [] for pz in graph.pzs}
-        return FGPResult([], gate_partition_by_pz, {}, [], [])
+        return FGPResult([], gate_partition_by_pz, {}, [], [], time_slices=[])
 
     _debug("Starting FGP partitioning into", num_pzs, "clusters")
 
@@ -101,7 +109,7 @@ def fgp_roee(
 
     if not two_qubit_gate_ids:
         gate_partition_by_pz = {pz.name: [] for pz in graph.pzs}
-        return FGPResult([], gate_partition_by_pz, {}, [], [])
+        return FGPResult([], gate_partition_by_pz, {}, [], [], time_slices=[])
 
     num_qubits = _infer_num_qubits(gate_info)
     capacity = max(capacity or math.ceil(num_qubits / num_pzs), 1)
@@ -116,7 +124,7 @@ def fgp_roee(
         _debug(f"  Slice {i}: {gate_details}")
     if not time_slices:
         gate_partition_by_pz = {pz.name: [] for pz in graph.pzs}
-        return FGPResult([], gate_partition_by_pz, {}, [], [])
+        return FGPResult([], gate_partition_by_pz, {}, [], [], time_slices=time_slices)
 
     # Phase 2: Create initial partition based on total qubit interaction frequency
     total_weights = _build_total_interaction_graph(two_qubit_gate_ids, gate_info)
@@ -191,7 +199,14 @@ def fgp_roee(
 
         slice_plans.append(SlicePlan(qubits_by_pz=qubits_by_pz, gates_by_pz=gates_by_pz))
 
-    return FGPResult(assignments, gate_partition_by_pz, gate_assignment, moves, slice_plans)
+    return FGPResult(
+        assignments,
+        gate_partition_by_pz,
+        gate_assignment,
+        moves,
+        slice_plans,
+        time_slices=time_slices,
+    )
 
 
 # ---------------------------------------------------------------------------
