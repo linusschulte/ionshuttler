@@ -25,13 +25,14 @@ if TYPE_CHECKING:
 
 def is_qasm_file(file_path: Path) -> bool:
     with file_path.open(encoding="utf-8") as file:
-        # Read the first line of the file (7th line, specific to MQT Bench)
-        first_line = ""
-        for _f in range(7):
-            prev_line = first_line
-            first_line = file.readline()
-        # Check if the first line contains the OPENQASM identifier
-        return "OPENQASM" in first_line or "OPENQASM" in prev_line
+        # Scan the first handful of lines for the OPENQASM header (QASM 2 or 3)
+        for _ in range(20):
+            line = file.readline()
+            if not line:
+                break
+            if "OPENQASM" in line:
+                return True
+    return False
 
 
 def extract_qubits_from_gate(gate_line: str) -> list[int]:
@@ -141,6 +142,7 @@ def find_best_gate(
     front_layer: list[DAGDepNode],
     dist_map: dict[int, dict[str, int]],
     gate_info_map: dict[DAGDepNode, str],
+    #consider_slice_plan: bool = False,
 ) -> DAGDepNode:
     """Find the best gate to execute based on distance."""
     min_gate_cost = math.inf
@@ -150,6 +152,7 @@ def find_best_gate(
         pz = graph.pzs_name_map[pz_of_node]
         if gate_node in pz.getting_processed:
             return gate_node
+        # TODO: Write a more advanced selection strategy here, e.g., pick gates that are far behind in the slice plan
         gate_cost = max(dist_map[qs][pz_of_node] for qs in qubit_indices)
         # if both ions of 2-qubit gate are in pz execute 2-qubit gate
         if len(qubit_indices) == 2 and gate_cost == 0:
@@ -171,8 +174,21 @@ def manual_copy_dag(dag: DAGDependency) -> DAGDependency:
     return new_dag
 
 
+def _load_qasm_circuit(filename: Path) -> QuantumCircuit:
+    """Load QASM 2.0 or 3.0 into a QuantumCircuit, trying QASM 2 first then QASM 3."""
+    try:
+        return QuantumCircuit.from_qasm_file(str(filename))
+    except Exception:
+        # Fallback to QASM 3 loader if available
+        try:
+            from qiskit.qasm3 import load as load_qasm3  # type: ignore
+        except Exception as exc:
+            raise
+        return load_qasm3(str(filename))
+
+
 def create_dag(filename: Path) -> DAGDependency:
-    qc = QuantumCircuit.from_qasm_file(str(filename))
+    qc = _load_qasm_circuit(filename)
     # Remove barriers
     qc = RemoveBarriers()(qc)
     # Remove measurement operations

@@ -6,11 +6,13 @@ import networkx as nx
 from networkx.algorithms.community import kernighan_lin_bisection
 from qiskit import QuantumCircuit
 from qiskit.transpiler.passes import RemoveBarriers, RemoveFinalMeasurements
+from .compilation import _load_qasm_circuit
 
 
 def read_qasm_file(file_path: Path) -> QuantumCircuit:
-    circuit = QuantumCircuit.from_qasm_file(file_path)
-    # Remove barriers
+    #circuit = QuantumCircuit.from_qasm_file(file_path)
+    circuit = _load_qasm_circuit(file_path)
+    ## Remove barriers
     circuit = RemoveBarriers()(circuit)
     # Remove measurement operations
     return RemoveFinalMeasurements()(circuit)
