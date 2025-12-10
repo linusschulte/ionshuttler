@@ -6,7 +6,13 @@ from collections import Counter, OrderedDict
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from more_itertools import last
+# Ensure a headless backend for saving figures
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt  # for saving mpl figures
+except Exception:
+    plt = None
 
 from .compilation import get_all_first_gates_and_update_sequence_non_destructive, remove_processed_gates
 from .cycles import get_ions
@@ -35,6 +41,11 @@ if TYPE_CHECKING:
     from .processing_zone import ProcessingZone
     from .types import Edge, SlicePlan
 
+
+# Gate time configuration (overridable from run scripts)
+GATE_TIME_1Q = 1
+GATE_TIME_2Q = 3
+REHOME = False
 
 def check_duplicates(graph: Graph) -> None:
     edge_idxs_occupied = []
@@ -375,10 +386,118 @@ def shuttle(
             plot_cycle=False,
             plot_pzs=False,
             filename=unique_folder / f"{graph.arch}_timestep_{timestep}.png",
-            title_text=title_text,
-            xlabel_text=xlabel_text,
         )
 
+
+def _save_dag_snapshot(dag: 'DAGDependency', out_path: pathlib.Path) -> None:
+    """Best-effort save of a DAG snapshot with detailed debug prints.
+    Tries, in order:
+      1) dag.draw(filename=...) if supported by Qiskit version
+      2) If draw() returns a Matplotlib figure, savefig
+      3) If draw() returns a Graphviz object, try render/write/pipe
+      4) Fallback to DOT/TEXT via attributes or str(dag)
+    """
+    print(f"[DAG SAVE] Attempting to save snapshot to {out_path}")
+    # 1) Try direct write via filename param (no unsupported 'output' kw)
+    try:
+        dag.draw(filename=str(out_path))
+        print(f"[DAG SAVE] Saved DAG snapshot via dag.draw(filename=...) to {out_path}")
+        return
+    except TypeError as e:
+        print(f"[DAG SAVE] dag.draw(filename=...) TypeError: {e}")
+    except Exception as e:
+        print(f"[DAG SAVE] dag.draw(filename=...) failed: {e}")
+
+    # 2) Try draw() and inspect the return
+    try:
+        obj = dag.draw()
+        print(f"[DAG SAVE] dag.draw() returned: {type(obj)}")
+        # Matplotlib figure
+        if hasattr(obj, 'savefig'):
+            try:
+                obj.savefig(str(out_path))
+                if plt is not None:
+                    try:
+                        plt.close(obj)
+                    except Exception as ce:
+                        print(f"[DAG SAVE] Warning closing figure: {ce}")
+                print(f"[DAG SAVE] Saved DAG snapshot via fig.savefig to {out_path}")
+                return
+            except Exception as e:
+                print(f"[DAG SAVE] fig.savefig failed: {e}")
+        # Graphviz API (graphviz.Digraph or pydot/Source-like)
+        # Try render
+        if hasattr(obj, 'render'):
+            try:
+                obj.render(filename=str(out_path), cleanup=True, format=out_path.suffix.lstrip('.'))
+                print(f"[DAG SAVE] Saved DAG snapshot via graphviz.render to {out_path}")
+                return
+            except Exception as e:
+                print(f"[DAG SAVE] graphviz.render failed: {e}")
+        # Try write
+        if hasattr(obj, 'write'):
+            try:
+                obj.write(str(out_path))
+                print(f"[DAG SAVE] Saved DAG snapshot via graphviz.write to {out_path}")
+                return
+            except Exception as e:
+                print(f"[DAG SAVE] graphviz.write failed: {e}")
+        # Try pipe to PNG bytes
+        if hasattr(obj, 'pipe'):
+            try:
+                data = obj.pipe(format='png')
+                out_path.write_bytes(data)
+                print(f"[DAG SAVE] Saved DAG snapshot via graphviz.pipe to {out_path}")
+                return
+            except Exception as e:
+                print(f"[DAG SAVE] graphviz.pipe failed: {e}")
+        # Try source -> DOT file
+        src = getattr(obj, 'source', None)
+        if isinstance(src, str):
+            try:
+                out_dot = out_path.with_suffix('.dot')
+                out_dot.write_text(src)
+                print(f"[DAG SAVE] Saved DAG DOT via .source to {out_dot}")
+                return
+            except Exception as e:
+                print(f"[DAG SAVE] writing DOT via .source failed: {e}")
+        # If it's a string and looks like DOT, save it
+        if isinstance(obj, str) and 'digraph' in obj:
+            try:
+                out_dot = out_path.with_suffix('.dot')
+                out_dot.write_text(obj)
+                print(f"[DAG SAVE] Saved DAG DOT (string) to {out_dot}")
+                return
+            except Exception as e:
+                print(f"[DAG SAVE] writing DOT string failed: {e}")
+    except Exception as e:
+        print(f"[DAG SAVE] dag.draw() call failed: {e}")
+
+    # 4) Last resort: save str(dag) to TXT
+    try:
+        out_txt = out_path.with_suffix('.txt')
+        out_txt.write_text(str(dag))
+        print(f"[DAG SAVE] Saved DAG TEXT (str(dag)) to {out_txt}")
+        return
+    except Exception as e:
+        print(f"[DAG SAVE] writing str(dag) failed: {e}")
+
+    print("[DAG SAVE] All snapshot save attempts failed.")
+
+
+def _rehome_after_2q(graph: 'Graph', ion_a: int, ion_b: int, pz_name: str) -> None:
+    """Set the 'home' PZ of the ion that moved to the other ion's home PZ."""
+    home_a = graph.map_to_pz.get(ion_a)
+    home_b = graph.map_to_pz.get(ion_b)
+    # Only rehome if the executing PZ was one of the two homes
+    if pz_name not in (home_a, home_b):
+        return
+    # Rehome the one whose home != pz_name
+    if home_a == pz_name and home_b != pz_name:
+        graph.map_to_pz[ion_b] = pz_name
+    elif home_b == pz_name and home_a != pz_name:
+        graph.map_to_pz[ion_a] = pz_name
+    # else both already have same home -> nothing to do
 
 def main(
     graph: Graph,
@@ -388,15 +507,20 @@ def main(
     gate_partition: dict[str, list[int]] | None = None,
     slice_plan: list[SlicePlan] | None = None,
     max_timesteps: int = 100000,
+    save_dag: bool = False,
 ) -> int:
+    
     timestep = 0
     graph.state = get_ions(graph)
 
     gates_processed = []
 
     unique_folder = pathlib.Path("runs") / datetime.now().strftime("%Y%m%d_%H%M%S")
-    if graph.save is True:
-        unique_folder.mkdir(exist_ok=True, parents=True)
+    # Ensure folders exist even if graph.save is False (for plot_state outputs)
+    unique_folder.mkdir(exist_ok=True, parents=True)
+    dag_folder = unique_folder / "dags"
+    if save_dag:
+        dag_folder.mkdir(exist_ok=True, parents=True)
 
     if any([graph.plot, graph.save]):
         plot_state(
@@ -431,6 +555,9 @@ def main(
     for pz in graph.pzs:
         pz.time_in_pz_counter = 0
         pz.gate_execution_finished = True
+        # NEW: track gate start time (t0) per PZ
+        if not hasattr(pz, 'active_start_t'):
+            pz.active_start_t = None
 
     graph.in_process = []
 
@@ -588,17 +715,28 @@ def main(
                         graph.idc_dict, pz.parking_edge
                     ) and get_idx_from_idc(graph.idc_dict, state2) == get_idx_from_idc(graph.idc_dict, pz.parking_edge):
                         pz.gate_execution_finished = False
+                        # NEW: set t0 on first tick and pin ions
+                        if pz.active_start_t is None:
+                            pz.active_start_t = timestep
+                        for ion in (ion1, ion2):
+                            if ion not in graph.in_process:
+                                graph.in_process.append(ion)
                         pz.getting_processed.append(gate_node)
                         pz.time_in_pz_counter += 1
 
-                        gate_time = 3
-                        if pz.time_in_pz_counter == gate_time:
+                        gate_time_2q = GATE_TIME_2Q
+                        if pz.time_in_pz_counter == gate_time_2q:
                             processed_nodes[pz_name] = gate_node
+                            # # rehome the moved ion to the executing PZ - now done when selecting pz for 2-qubit gate in scheduling
+                            if REHOME == True:
+                                _rehome_after_2q(graph, ion1, ion2, pz.name)
+                            # remove the locked pz of the processed two-qubit gate
                             if gate_id in graph.locked_gates and graph.locked_gates[gate_id] == pz.name:
                                 graph.locked_gates.pop(gate_id)
                             pz.time_in_pz_counter = 0
                             pz.gate_execution_finished = True
-                            pz.getting_processed.remove(gate_node)
+                            if gate_node in pz.getting_processed:
+                                pz.getting_processed.remove(gate_node)
                 else:
                     msg = "Invalid gate format"
                     raise ValueError(msg)
@@ -644,10 +782,14 @@ def main(
                             pz.gate_execution_finished = False
                             pz.time_in_pz_counter += 1
 
-                            gate_time = 3
-                            if pz.time_in_pz_counter == gate_time:
+                            gate_time_2q = GATE_TIME_2Q
+                            if pz.time_in_pz_counter == gate_time_2q:
                                 processed_gate_ids.insert(0, gate_id)
                                 gate_processed = True
+                                if REHOME == True:
+                                    _rehome_after_2q(graph, ion1, ion2, pz.name)
+                                # remove the processing zone from the list
+                                # (it can only process one gate)
                                 pzs.remove(pz)  # noqa: B909
                                 if gate_id in graph.locked_gates and graph.locked_gates[gate_id] == pz.name:
                                     graph.locked_gates.pop(gate_id)
@@ -678,6 +820,36 @@ def main(
                     for node in processed_nodes.values()
                     if gate_id_lookup.get(node.node_id) is not None
                 ]
+                execs = []
+                for pz_name, gate_node in processed_nodes.items():
+                    try:
+                        pz = graph.pzs_name_map[pz_name]
+                        gtype = (
+                            getattr(getattr(gate_node, "op", None), "name", None)
+                            or getattr(gate_node, "name", None)
+                            or "OP"
+                        )
+                        qubits = list(getattr(gate_node, "qindices", [q._index for q in getattr(gate_node, "qargs", [])]))
+                        duration = GATE_TIME_2Q if len(qubits) >= 2 else GATE_TIME_1Q
+                        execs.append({
+                            "id": f"t{timestep}_{pz_name}",
+                            "type": gtype,
+                            "qubits": qubits,
+                            "pz": pz_name,
+                            "edge_idc": pz.parking_edge,  # for placement
+                            "duration": duration,
+                            # NEW: include t0 from PZ state
+                            "t0": int(pz.active_start_t) if isinstance(pz.active_start_t, int) else timestep - duration + 1,
+                        })
+                    except Exception:
+                        continue
+                    finally:
+                        # NEW: reset start time after emitting
+                        pz.active_start_t = None
+                graph.executed_gates_next = execs
+            else:
+                graph.executed_gates_next = []
+            if processed_nodes:
                 remove_processed_gates(graph, dag, gate_id_lookup, processed_nodes)
                 _update_slice_progress(graph, completed_gate_ids)
                 next_processable_gate_nodes = get_all_first_gates_and_update_sequence_non_destructive(graph, dag)
@@ -686,13 +858,64 @@ def main(
                     if gate_id is not None:
                         locked_gates[gate_id] = pz_name
         else:
+            # publish processed_ions with duration and t0 to the timeline collector
+            if processed_gate_ids:
+                execs = []
+                for i, gate_id in enumerate(processed_gate_ids):
+                    gate_qubits = graph.gate_qubits(gate_id)
+                    duration = GATE_TIME_2Q if len(gate_qubits) >= 2 else GATE_TIME_1Q
+                    # Find pz for this gate's ions (last used above)
+                    # We attach the first matching PZ where both ions (or single) are in parking
+                    pz_used = None
+                    for pz in graph.pzs:
+                        try:
+                            if len(gate_id) == 1 and get_idx_from_idc(graph.idc_dict, graph.state[gate_qubits[0]]) == get_idx_from_idc(graph.idc_dict, pz.parking_edge):
+                                pz_used = pz
+                                break
+                            if len(gate_id) == 2:
+                                if all(get_idx_from_idc(graph.idc_dict, graph.state[q]) == get_idx_from_idc(graph.idc_dict, pz.parking_edge) for q in gate_qubits):
+                                    pz_used = pz
+                                    break
+                        except Exception:
+                            continue
+                    execs.append({
+                        "id": f"t{timestep}_{i}",
+                        "type": "OP",
+                        "qubits": list(gate_qubits),
+                        "duration": duration,
+                        **({"pz": getattr(pz_used, 'name', None)} if pz_used else {}),
+                        **({"edge_idc": getattr(pz_used, 'parking_edge', None)} if pz_used else {}),
+                        # Use pz.active_start_t if available
+                        **({"t0": int(getattr(pz_used, 'active_start_t'))} if getattr(pz_used, 'active_start_t', None) is not None else {"t0": timestep - duration + 1}),
+                    })
+                    # reset start time on the used PZ
+                    if pz_used is not None:
+                        pz_used.active_start_t = None
+                graph.executed_gates_next = execs
+            else:
+                graph.executed_gates_next = []
+
             for gate_id in processed_gate_ids:
                 if gate_id in graph.sequence:
                     graph.sequence.remove(gate_id)
             _update_slice_progress(graph, processed_gate_ids)
 
         if len(graph.sequence) == 0:
+            # Save DAG snapshot for final state as well
+            try:
+                if save_dag and use_dag and dag is not None:
+                    _save_dag_snapshot(dag, dag_folder / f"dag_timestep_{timestep}.png")
+            except Exception:
+                pass
             break
+
+        # Save DAG snapshot at the end of this timestep
+        try:
+            if save_dag and use_dag and dag is not None:
+                _save_dag_snapshot(dag, dag_folder / f"dag_timestep_{timestep}.png")
+                print("Saved DAG snapshot.")
+        except Exception:
+            pass
 
         timestep += 1
 

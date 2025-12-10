@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from .types import Edge, Node
 
 DEBUG_FLAG = bool(int(os.getenv("IONSHUTTLER_DEBUG_SCHEDULING", "0")))
-
+ON_CYCLE = True
 
 def preprocess(graph: Graph, priority_queue: dict[int, str]) -> None:
     need_rotate = [False] * len(priority_queue)
@@ -628,8 +628,13 @@ def find_movable_cycles(
     # start with first ion in priority queue
     free_cycle_seq_idxs = [next(iter(priority_queue.keys()))]
 
+    ions_pos_dict = get_ions(graph)
+    prev_ions_of_priority_queue = free_cycle_seq_idxs.copy()
     # check if ion can move while first ion is moving and so on
     for seq_cyc in list(priority_queue.keys())[1:]:
+        # manually add the ion here since we skip ions not in all_cycles below (we later check prev_ions_of_priority_queue[:-1])
+        prev_ions_of_priority_queue.append(seq_cyc)
+
         # skip ion of priority_queue if it is not in all_cycles
         # -> was removed before in individual move_list
         if seq_cyc not in all_cycles:
@@ -642,8 +647,17 @@ def find_movable_cycles(
             ) in nonfree_cycles:
                 nonfree = True
                 break
+        if ON_CYCLE == True:
+            for prev_ion in prev_ions_of_priority_queue[:-1]:
+                # check if a previous ion in priority queue is located on an edge of the current ion's cycle
+                edge_idc_of_prev_ion = ions_pos_dict[prev_ion]
+                if edge_idc_of_prev_ion in all_cycles[seq_cyc] or (edge_idc_of_prev_ion[1], edge_idc_of_prev_ion[0]) in all_cycles[seq_cyc]:
+                    nonfree = True
+                    break
         if nonfree is False:
             free_cycle_seq_idxs.append(seq_cyc)
+        
+        prev_ions_of_priority_queue.append(seq_cyc)
 
     if DEBUG_FLAG:
         print("FREE CYCLES:", [str(idx) + ": " + str(cycle) for idx, cycle in sorted(all_cycles.items()) if idx in free_cycle_seq_idxs])
