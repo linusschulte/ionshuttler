@@ -1,10 +1,12 @@
 import argparse
 import json
 import pathlib
+import random
 import re
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta
 from itertools import product
 from typing import Any
@@ -14,6 +16,10 @@ from qiskit import QuantumCircuit
 import h5py
 import numpy as np
 from scipy.stats import qmc
+try:
+    import matplotlib.pyplot as plt  # type: ignore
+except Exception:
+    plt = None
 
 PRINT_DEBUG = 0
 
@@ -247,6 +253,9 @@ def main(config: dict[str, Any]):
     gate_partition_cfg = config.get("gate_partition")
     gate_partition_algorithm_cfg = config.get("gate_partition_algorithm")
     enforce_slice_plan = config.get("enforce_slice_plan", True)
+    optimize_params = config.get("optimize_params", False)
+    optimization_budget = float(config.get("optimization_budget", 10.0))
+    plot_move_hist = bool(config.get("plot_move_hist", False))
     graph.gate_pz_assignment = {}
     graph.current_gate_by_pz = {}
     graph.locked_gates = {}
@@ -393,7 +402,63 @@ def main(config: dict[str, Any]):
             if "lookahead_weight_factor" not in algo_params:
                 algo_params["lookahead_weight_factor"] = 1.0
 
-            result = gate_partitioner(graph, **algo_params)
+            partition_param_trials: list[dict[str, object]] | None = None
+            if optimize_params and algo_name_lower == "fgp_tabu":
+                print(f"Optimizing fgp_tabu parameters for up to {optimization_budget:.1f}s using move_distance_total proxy")
+                start_opt = time.time()
+                best_result = None
+                best_params = None
+                trials: list[dict[str, object]] = []
+                iteration = 0
+                collected_results = []
+                while True:
+                    iteration += 1
+                    sampled = {
+                        "balance_penalty": random.uniform(0.1, 5.0),
+                        "sigma": random.uniform(0.1, 5.0),
+                        "lookahead_weight_factor": random.uniform(0.1, 5.0),
+                        "distance_weight_factor": random.uniform(0.1, 5.0),
+                    }
+                    params_for_run = algo_params.copy()
+                    params_for_run.update(sampled)
+                    candidate = None
+                    try:
+                        candidate = gate_partitioner(graph, **params_for_run)
+                    except Exception as exc:
+                        print(f"Warning: fgp_tabu candidate failed: {exc}")
+                    move_dist = getattr(candidate, "move_distance_total", None) if candidate else None
+                    trials.append({"params": sampled, "move_distance_total": move_dist})
+                    if candidate and move_dist is not None:
+                        collected_results.append((candidate, params_for_run, move_dist))
+                    current_best = getattr(best_result, "move_distance_total", None) if best_result else None
+                    if candidate and move_dist is not None and (current_best is None or move_dist < current_best):
+                        best_result = candidate
+                        best_params = params_for_run
+                    if time.time() - start_opt >= optimization_budget and best_result is not None:
+                        break
+                    if time.time() - start_opt >= optimization_budget and iteration > 3:
+                        break
+                chosen_result = best_result if best_result is not None else candidate
+                if collected_results:
+                    distances = [md for _, _, md in collected_results if md is not None]
+                    mean_md = float(np.mean(distances))
+                    std_md = float(np.std(distances))
+                    mid_pack = [
+                        (res, params, md)
+                        for res, params, md in collected_results
+                        if abs(md - mean_md) <= std_md
+                    ]
+                    if mid_pack:
+                        res_mid, params_mid, md_mid = min(mid_pack, key=lambda x: x[2])
+                        chosen_result = res_mid
+                        best_params = params_mid
+                result = chosen_result
+                partition_param_trials = trials
+                if best_params:
+                    print(f"Ran {iteration} iterations. Selected params: {best_params} with move_distance_total={getattr(result, 'move_distance_total', None)}")
+            else:
+                result = gate_partitioner(graph, **algo_params)
+                partition_param_trials = None
 
             gate_partition_for_run = result.gate_partition_by_pz
             gate_assignment = result.gate_assignment
@@ -484,6 +549,7 @@ def main(config: dict[str, Any]):
         time_slices_info,
         qubit_assignments,
         move_distance_total,
+        partition_param_trials if 'partition_param_trials' in locals() else None,
     )
 
 
@@ -587,21 +653,22 @@ if __name__ == "__main__":
 
     #################################################################################################################
     # Meta study configuration
+    plot_move_hist = True
     clear_prev = False
     #unique_id = "generated_0.71_0.7_num_ions_4pzs"
     #unique_id = "balance_distance_sweep_20ions_4pzs"
     #unique_id = "num_pzs_mean_std_allswept_4pzs"
-    unique_id = "quantinuum_num_ions_4pzs"
+    unique_id = "random_quantinuum_optimize_params_num_ions_4pzs"
     
 
     # Declare partitioning algorithm parameters
     fgp_tabu = {
         'name': 'fgp_tabu',
         'params': {
-            'balance_penalty': np.linspace(0.1, 5, 40),  #[0.6],
-            'sigma': np.linspace(0.1, 5, 20),  #[5.0],
-            'lookahead_weight_factor': np.linspace(0.1, 5, 20),  #[0.6],
-            'distance_weight_factor': np.linspace(0.1, 5, 20)  #[1.5],
+            #'balance_penalty': np.linspace(0.1, 5, 40),  #[0.6],
+            #'sigma': np.linspace(0.1, 5, 20),  #[5.0],
+            #'lookahead_weight_factor': np.linspace(0.1, 5, 20),  #[0.6],
+            #'distance_weight_factor': np.linspace(0.1, 5, 20)  #[1.5],
         },
         'sampling': {
             'method': 'lhs',
@@ -624,7 +691,7 @@ if __name__ == "__main__":
 
     meta_study_config = {
         # Core architecture parameters
-        'num_ions': [10,20,30],
+        'num_ions': [10,15,20],
         'num_pzs': [4],
         'ions_per_pz': [3],
         'grid_size': [6],
@@ -635,6 +702,7 @@ if __name__ == "__main__":
         'enable_memory_zone_manager': [False],
         'save' : [False],
         'plot' : [False],
+        'optimize_params': [True],
         #'gate_density': [(0.5,0.5)],
         #'gate_density': [(0.0,1.0), (0.1,0.9), (0.2,0.8), (0.3,0.7), (0.4,0.6), (0.5,0.5), (0.6,0.4), (0.7,0.3), (0.8,0.2), (0.9,0.1), (1.0,0.0)],
         #'gate_density': [(0.1,0.1), (0.25,0.25), (0.5,0.5), (0.75, 0.75), (1.0, 1.0)], 
@@ -759,6 +827,7 @@ if __name__ == "__main__":
         
         best_timesteps = None
         best_params = None
+        move_dist_records: list[float] = []
 
         for run_params in valid_combinations:
             # Check if this parameter set already exists
@@ -782,6 +851,7 @@ if __name__ == "__main__":
                 'gate_density': lambda v: v,
                 'enable_memory_zone_manager': lambda v: v,
                 'pz_numbers_to_use': lambda v: v,
+                'optimize_params': lambda v: v,
             }
             
             # Apply direct parameter mappings
@@ -832,6 +902,7 @@ if __name__ == "__main__":
                     time_slices_info,
                     qubit_assignments,
                     move_distance_total,
+                    partition_param_trials,
                 ) = execute_run(config)
 
                 print("move_distance_total:", move_distance_total)
@@ -853,6 +924,10 @@ if __name__ == "__main__":
                 run_group.attrs["move_distance_total"] = (
                     float(move_distance_total) if move_distance_total is not None else np.nan
                 )
+                if partition_param_trials:
+                    _write_json_dataset(run_group, "partition_param_trials", partition_param_trials)
+                if move_distance_total is not None:
+                    move_dist_records.append(float(move_distance_total))
                 
                 
                 if run_group.attrs['success']:
@@ -880,3 +955,18 @@ if __name__ == "__main__":
     print(f"Results saved to {results_file}")
     if best_params is not None:
         print(f"Best run achieved {best_timesteps} timesteps with parameters: {best_params}")
+    if plot_move_hist and plt is not None and move_dist_records:
+        try:
+            pathlib.Path("outputs/plots").mkdir(parents=True, exist_ok=True)
+            fig, ax = plt.subplots(figsize=(6, 4))
+            ax.hist(move_dist_records, bins=20, edgecolor="black", alpha=0.8)
+            ax.set_xlabel("move_distance_total")
+            ax.set_ylabel("count")
+            ax.set_title("Distribution of move_distance_total (meta study)")
+            fig.tight_layout()
+            plot_path = pathlib.Path("outputs/plots/move_distance_hist.png")
+            fig.savefig(plot_path)
+            plt.close(fig)
+            print(f"Saved move_distance_total histogram to {plot_path}")
+        except Exception as exc:
+            print(f"Warning: failed to plot move_distance_total histogram: {exc}")
