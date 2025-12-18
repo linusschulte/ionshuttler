@@ -20,14 +20,15 @@ def read_qasm_file(file_path: Path) -> QuantumCircuit:
 
 def construct_interaction_graph(circuit: QuantumCircuit) -> nx.Graph[int]:
     graph: nx.Graph[int] = nx.Graph()
-    qubits = circuit.qubits
-    for qubit in qubits:
-        graph.add_node(qubit._index)
+    # Build explicit index mapping to avoid relying on private _index (which can be None)
+    qubit_index = {q: idx for idx, q in enumerate(circuit.qubits)}
+    for idx in qubit_index.values():
+        graph.add_node(idx)
 
     for gate in circuit.data:
         if len(gate.qubits) == 2:  # Check if it is a 2-qubit gate
-            q0 = gate.qubits[0]._index
-            q1 = gate.qubits[1]._index
+            q0 = qubit_index[gate.qubits[0]]
+            q1 = qubit_index[gate.qubits[1]]
             if graph.has_edge(q0, q1):
                 graph[q0][q1]["weight"] += 1
             else:

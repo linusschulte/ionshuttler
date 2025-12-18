@@ -78,30 +78,53 @@ def find_least_import_ion_in_parking(seq: list[int], ions_in_parking: list[int])
     return ions_in_parking[-1]
 
 
+def _edge_capacity(graph: Graph, edge: Edge) -> int:
+    """Determine per-edge ion capacity based on orientation and grid spacing."""
+    (u0, u1), (v0, v1) = edge
+    # vertical edge (different x)
+    if u0 != v0:
+        return max(getattr(graph, "ion_chain_size_vertical", 1), 1)
+    # horizontal edge (different y)
+    if u1 != v1:
+        return max(getattr(graph, "ion_chain_size_horizontal", 1), 1)
+    return 1
+
+
 def create_starting_config(graph: Graph, n_of_ions: int, seed: int | None = None) -> int:
     # Initialize ions on edges using an edge attribute
     nx.set_edge_attributes(graph, {key: [] for key in graph.edges()}, "ions")
 
+    traps = [edges for edges in graph.edges() if graph.get_edge_data(edges[0], edges[1])["edge_type"] == "trap"]
+    capacities = {edge: _edge_capacity(graph, edge) for edge in traps}
+    total_capacity = sum(capacities.values())
+    if n_of_ions > total_capacity:
+        raise ValueError(f"Requested {n_of_ions} ions but total trap capacity is {total_capacity}.")
+
     if seed is not None:
         random.seed(seed)
-        starting_traps = []
-        traps = [edges for edges in graph.edges() if graph.get_edge_data(edges[0], edges[1])["edge_type"] == "trap"]
-        n_of_traps = len(traps)
 
-        random_starting_traps = random.sample(range(n_of_traps), (n_of_ions))
-        for trap in random_starting_traps:
-            starting_traps.append(traps[trap])
-    else:
-        starting_traps = [
-            edges for edges in graph.edges() if graph.get_edge_data(edges[0], edges[1])["edge_type"] == "trap"
-        ][:n_of_ions]
-    number_of_registers = len(starting_traps)
+    placed = 0
+    trap_indices = list(range(len(traps)))
+    # iterate over traps cycling until placed all ions
+    while placed < n_of_ions:
+        random.shuffle(trap_indices)
+        progress = False
+        for idx in trap_indices:
+            edge = traps[idx]
+            current = graph.edges[edge].get("ions", [])
+            cap = capacities[edge]
+            if len(current) < cap:
+                current.append(placed)
+                graph.edges[edge]["ions"] = current
+                placed += 1
+                progress = True
+                if placed >= n_of_ions:
+                    break
+        if not progress:
+            # should not happen due to capacity check
+            break
 
-    # place ions onto traps (ion0 on starting_trap0)
-    for ion, idc in enumerate(starting_traps):
-        graph.edges[idc]["ions"] = [ion]
-
-    return number_of_registers
+    return len(traps)
 
 
 def get_ions(graph: Graph) -> dict[int, Edge]:
@@ -450,11 +473,11 @@ def find_conflict_cycle_idxs(graph: Graph, cycles_dict: dict[int, list[Edge]]) -
         nodes1 = get_cycle_nodes(cycle1, graph)
         nodes2 = get_cycle_nodes(cycle2, graph)
 
-        if DEBUG_FLAG :
-            print(dict(sorted(cycles_dict.items())))
-            print("comparing:")
-            print(f"cylce {cycle1}:", nodes1)
-            print(f"cycle {cycle2}:", nodes2)
+        #if DEBUG_FLAG :
+        #    print(dict(sorted(cycles_dict.items())))
+        #    print("comparing:")
+        #    print(f"cylce {cycle1}:", nodes1)
+        #    print(f"cycle {cycle2}:", nodes2)
 
         # new: exclude processing zone node -> if pz node in circles -> can both be executed (TODO check again for moves out of pz)
         # extra: if both end in same edge -> don't execute (scenario where path out of pz ends in same edge as next edge for other)
