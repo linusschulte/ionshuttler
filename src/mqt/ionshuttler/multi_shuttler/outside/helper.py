@@ -2,7 +2,7 @@ from outside.processing_zone import ProcessingZone
 
 def generate_pzs(num_pzs, m, n, v, h, height = -1):
    
-    if num_pzs <= 0:
+    if num_pzs <= 4:
         pz_definitions =  {
             "pz1": ProcessingZone(
                 "pz1",

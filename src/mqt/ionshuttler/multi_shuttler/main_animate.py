@@ -387,9 +387,11 @@ def main(config: dict[str, Any]):
             gate_partition_for_run = result.gate_partition_by_pz
             gate_assignment = result.gate_assignment
             graph.initialize_slice_plan(result.slice_plan, enforce=enforce_slice_plan)
-        elif algo_name_lower in {"fgp_tabu", "fgp_kl"}:
+        elif algo_name_lower in {"fgp_tabu", "fgp_tabu_global", "fgp_kl"}:
             if algo_name_lower == "fgp_tabu":
                 from outside.fgp_tabu import fgp_tabu as gate_partitioner
+            elif algo_name_lower == "fgp_tabu_global":
+                from outside.fgp_tabu_global import fgp_tabu_global as gate_partitioner
             else:
                 from outside.fgp_kl import fgp_kl as gate_partitioner
 
@@ -397,8 +399,14 @@ def main(config: dict[str, Any]):
                 algo_params["num_pzs"] = config.get("num_pzs", 1)
             if "capacity" not in algo_params:
                 algo_params["capacity"] = config.get("max_ions_per_pz", 1)
-            if "lookahead_weight_factor" not in algo_params:
-                algo_params["lookahead_weight_factor"] = 1.0
+            if algo_name_lower == "fgp_tabu_global":
+                if "capacity_weight" not in algo_params:
+                    algo_params["capacity_weight"] = 1.0
+                if "distance_weight" not in algo_params:
+                    algo_params["distance_weight"] = 1.0
+            else:
+                if "lookahead_weight_factor" not in algo_params:
+                    algo_params["lookahead_weight_factor"] = 1.0
 
             result = gate_partitioner(graph, **algo_params)
 

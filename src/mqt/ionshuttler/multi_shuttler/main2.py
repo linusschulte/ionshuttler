@@ -254,7 +254,7 @@ def main(config: dict[str, Any]):
     gate_partition_algorithm_cfg = config.get("gate_partition_algorithm")
     enforce_slice_plan = config.get("enforce_slice_plan", True)
     optimize_params = config.get("optimize_params", False)
-    optimization_budget = float(config.get("optimization_budget", 10.0))
+    optimization_budget = float(config.get("optimization_budget", 3.0))
     plot_move_hist = bool(config.get("plot_move_hist", False))
     graph.gate_pz_assignment = {}
     graph.current_gate_by_pz = {}
@@ -389,9 +389,11 @@ def main(config: dict[str, Any]):
             gate_assignment = result.gate_assignment
             graph.initialize_slice_plan(result.slice_plan, enforce=enforce_slice_plan)
             partition_result = result
-        elif algo_name_lower in {"fgp_tabu", "fgp_kl"}:
+        elif algo_name_lower in {"fgp_tabu", "fgp_tabu_global", "fgp_kl"}:
             if algo_name_lower == "fgp_tabu":
                 from outside.fgp_tabu import fgp_tabu as gate_partitioner
+            elif algo_name_lower == "fgp_tabu_global":
+                from outside.fgp_tabu_global import fgp_tabu_global as gate_partitioner
             else:
                 from outside.fgp_kl import fgp_kl as gate_partitioner
 
@@ -399,8 +401,14 @@ def main(config: dict[str, Any]):
                 algo_params["num_pzs"] = config.get("num_pzs", 1)
             if "capacity" not in algo_params:
                 algo_params["capacity"] = config.get("max_ions_per_pz", 1)
-            if "lookahead_weight_factor" not in algo_params:
-                algo_params["lookahead_weight_factor"] = 1.0
+            if algo_name_lower == "fgp_tabu_global":
+                if "capacity_weight" not in algo_params:
+                    algo_params["capacity_weight"] = 1.0
+                if "distance_weight" not in algo_params:
+                    algo_params["distance_weight"] = 1.0
+            else:
+                if "lookahead_weight_factor" not in algo_params:
+                    algo_params["lookahead_weight_factor"] = 1.0
 
             partition_param_trials: list[dict[str, object]] | None = None
             if optimize_params and algo_name_lower == "fgp_tabu":
@@ -621,7 +629,7 @@ if __name__ == "__main__":
         exit()
 
     # Use a single results file (not datetime specific)
-    results_file = f"outputs/simulation_results_{config['algorithm_name']}.h5"
+    results_file = f"outputs/simulation_results.h5"
     pathlib.Path("outputs").mkdir(exist_ok=True)
     
     # Helper function to check if parameter set exists
@@ -653,13 +661,12 @@ if __name__ == "__main__":
 
     #################################################################################################################
     # Meta study configuration
-    plot_move_hist = True
+    plot_move_hist = False
     clear_prev = False
     #unique_id = "generated_0.71_0.7_num_ions_4pzs"
     #unique_id = "balance_distance_sweep_20ions_4pzs"
     #unique_id = "num_pzs_mean_std_allswept_4pzs"
-    unique_id = "random_quantinuum_optimize_params_num_ions_4pzs"
-    
+    unique_id = "BENCH_quantinuum_4pzs_4433"
 
     # Declare partitioning algorithm parameters
     fgp_tabu = {
@@ -670,7 +677,7 @@ if __name__ == "__main__":
             #'lookahead_weight_factor': np.linspace(0.1, 5, 20),  #[0.6],
             #'distance_weight_factor': np.linspace(0.1, 5, 20)  #[1.5],
         },
-        'sampling': {
+        '_sampling': {
             'method': 'lhs',
             'num_samples': 10,
         },
@@ -690,13 +697,14 @@ if __name__ == "__main__":
 
 
     meta_study_config = {
+        "algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2", "qaoa_nativegates_quantinuum_opt2", ],
         # Core architecture parameters
-        'num_ions': [10,15,20],
+        'num_ions': [10],
         'num_pzs': [4],
         'ions_per_pz': [3],
-        'grid_size': [6],
-        'mz_trap_size': [1],
-        'pz_numbers_to_use': [[9,10,11,12]], 
+        'grid_size': [4],
+        'mz_trap_size': [3],
+        #'pz_numbers_to_use': [[5,6,7,8]], 
         'use_dag': [True],
         'enforce_slice_plan': [False],
         'enable_memory_zone_manager': [False],
@@ -710,7 +718,7 @@ if __name__ == "__main__":
         # Partitioning algorithm configurations
         'partitioning_algorithms': [
             {'name': 'none'},  # No partitioning
-            fgp_tabu,
+            #fgp_tabu,
             #fgp_kl,
             #fgp_roee,
         ]
@@ -718,7 +726,7 @@ if __name__ == "__main__":
 
     if unique_id != "":
         #stamp = datetime.now().strftime("%Y%m%d_%H")
-        results_file = f"outputs/results/simulation_results_{config['algorithm_name']}_{unique_id}.h5"
+        results_file = f"outputs/results/simulation_results_{unique_id}.h5"
 
     # Clear previous results if requested
     if clear_prev and pathlib.Path(results_file).exists():
@@ -852,6 +860,7 @@ if __name__ == "__main__":
                 'enable_memory_zone_manager': lambda v: v,
                 'pz_numbers_to_use': lambda v: v,
                 'optimize_params': lambda v: v,
+                'algorithm_name': lambda v: v,
             }
             
             # Apply direct parameter mappings
