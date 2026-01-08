@@ -34,7 +34,7 @@ from outside.graph_creator import GraphCreator, PZCreator
 from outside.partition import get_partition
 from outside.processing_zone import ProcessingZone
 from outside.shuttle import main as run_shuttle_main
-from outside.compilation import _load_qasm_circuit
+from outside.partition import parse_qasm_to_qiskit
 
 from outside.helper import generate_pzs, recalculate_architecture_config
 
@@ -232,7 +232,7 @@ def main(config: dict[str, Any]):
 
     try:
         if plot_flag:
-            qc = _load_qasm_circuit(qasm_file_path)
+            qc = parse_qasm_to_qiskit(qasm_file_path)
             qc.draw(output = "mpl", filename=f"outputs/circuits/{algorithm_name}_{num_ions}_circuit.png")
     except ImportError:
         print("Warning: qiskit not installed, skipping circuit visualization")
@@ -492,6 +492,9 @@ def main(config: dict[str, Any]):
                 print(f"  {gate_pz}: {sorted(gate_ids)}")
 
             graph.initialize_slice_plan(None)
+        elif algo_name_lower == "rehome":
+            # Dont do anything different from "none" but placeholder for rehome setting in shuttle.py algo
+            graph.initialize_slice_plan(None)
         else:
             msg = f"Unknown gate partition algorithm '{algo_name}'."
             raise ValueError(msg)
@@ -666,7 +669,7 @@ if __name__ == "__main__":
     #unique_id = "generated_0.71_0.7_num_ions_4pzs"
     #unique_id = "balance_distance_sweep_20ions_4pzs"
     #unique_id = "num_pzs_mean_std_allswept_4pzs"
-    unique_id = "BENCH_quantinuum_4pzs_4433"
+    unique_id = "fgp_tabu_global_benchmark_15ions_6pzs_2perpz_NODAG"
 
     # Declare partitioning algorithm parameters
     fgp_tabu = {
@@ -676,6 +679,20 @@ if __name__ == "__main__":
             #'sigma': np.linspace(0.1, 5, 20),  #[5.0],
             #'lookahead_weight_factor': np.linspace(0.1, 5, 20),  #[0.6],
             #'distance_weight_factor': np.linspace(0.1, 5, 20)  #[1.5],
+        },
+        '_sampling': {
+            'method': 'lhs',
+            'num_samples': 10,
+        },
+    }
+    fgp_tabu_global = {
+        'name': 'fgp_tabu_global',
+        'params': {
+            'balance_penalty': [5], #np.linspace(0.1, 5, 40),  #[0.6],
+            'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
+            'max_iterations':   [500, 2000], #list(range(0, 500+1, 100)),
+            'tabu_list_length': [200],
+            'seed': range(5)
         },
         '_sampling': {
             'method': 'lhs',
@@ -693,24 +710,26 @@ if __name__ == "__main__":
         'sampling': {'method': 'lhs', 'num_samples': 30},
     }
     fgp_roee = {'name': 'fgp_roee', 'params': {'sigma': [0.01,5.0]}, 'sampling': {'method': 'lhs', 'num_samples': 20},}
+    rehome = {'name': 'rehome', 'params': {}}
 
 
 
     meta_study_config = {
-        "algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2", "qaoa_nativegates_quantinuum_opt2", ],
+        #"algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2", "qaoa_nativegates_quantinuum_opt2", "qpeexact_nativegates_quantinuum_qiskit_opt2", "random_nativegates_quantinuum_qiskit_opt2"],
+        "algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2", "qaoa_nativegates_quantinuum_opt2", "random_nativegates_quantinuum_qiskit_opt2"],
         # Core architecture parameters
-        'num_ions': [10],
-        'num_pzs': [4],
+        'num_ions': [15],
+        'num_pzs': [6],
         'ions_per_pz': [3],
         'grid_size': [4],
-        'mz_trap_size': [3],
-        #'pz_numbers_to_use': [[5,6,7,8]], 
-        'use_dag': [True],
+        'mz_trap_size': [2],
+        'pz_numbers_to_use': [[1,9,6,3,11,8]], 
+        'use_dag': [False],
         'enforce_slice_plan': [False],
         'enable_memory_zone_manager': [False],
         'save' : [False],
         'plot' : [False],
-        'optimize_params': [True],
+        'optimize_params': [False],
         #'gate_density': [(0.5,0.5)],
         #'gate_density': [(0.0,1.0), (0.1,0.9), (0.2,0.8), (0.3,0.7), (0.4,0.6), (0.5,0.5), (0.6,0.4), (0.7,0.3), (0.8,0.2), (0.9,0.1), (1.0,0.0)],
         #'gate_density': [(0.1,0.1), (0.25,0.25), (0.5,0.5), (0.75, 0.75), (1.0, 1.0)], 
@@ -719,6 +738,7 @@ if __name__ == "__main__":
         'partitioning_algorithms': [
             {'name': 'none'},  # No partitioning
             #fgp_tabu,
+            fgp_tabu_global,
             #fgp_kl,
             #fgp_roee,
         ]
