@@ -49,6 +49,8 @@ class FGPResult:
     """Gate ids grouped by slice order, as constructed during partitioning."""
     move_distance_total: float | None = None
     """Sum of move distances between consecutive slices (None if not computed)."""
+    optimization_time: float | None = None
+    """Wallclock time spent in the optimizer (seconds)."""
 
 
 def _debug(*args: object) -> None:

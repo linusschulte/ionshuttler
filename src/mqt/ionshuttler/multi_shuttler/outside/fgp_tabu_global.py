@@ -3,7 +3,9 @@ from __future__ import annotations
 import itertools
 import math
 import os
+import random
 import shutil
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +23,7 @@ from .processing_zone import ProcessingZone
 from .types import GateInfo, SlicePlan
 
 DEBUG_FLAG = bool(int(os.getenv("IONSHUTTLER_DEBUG_FGP_TABU", "0")))
+ASSERT_FULL_COST = False
 
 @dataclass(slots=True)
 class Supernode:
@@ -56,11 +59,14 @@ def fgp_tabu_global(
     *,
     num_pzs: int | None = None,
     capacity: int | None = None,
-    capacity_weight: float = 1.0,
-    distance_weight: float = 1.0,
+    balance_penalty: float = 1.0,
+    distance_weight_factor: float = 1.0,
     max_iterations: int | None = None,
     tabu_list_length: int | None = None,
     graph_based_distance: bool = False,
+    enable_plots: bool = False,
+    randomize_initial: bool = False,
+    seed: int | None = None,
     **legacy_params: object,
 ) -> FGPResult:
     """Public entry point mirroring compute_gate_partition but using tabu refinement."""
@@ -70,8 +76,8 @@ def fgp_tabu_global(
         print(f"num_ions: {_infer_num_qubits(graph.gate_info)}")
         print(f"num_pzs: {num_pzs}")
         print(f"capacity: {capacity}")
-        print(f"capacity_weight: {capacity_weight}")
-        print(f"distance_weight: {distance_weight}")
+        print(f"balance_penalty: {balance_penalty}")
+        print(f"distance_weight_factor: {distance_weight_factor}")
         print(f"max_iterations: {max_iterations}")
         print(f"tabu_list_length: {tabu_list_length}")
         print(f"graph_based_distance: {graph_based_distance}")
@@ -96,11 +102,12 @@ def fgp_tabu_global(
     pz_positions: Sequence[ProcessingZone | None] = [graph.pzs_name_map.get(name) for name in pz_names]
     pz_distance_map = _build_pz_distance_map(graph, pz_positions, graph_based_distance=graph_based_distance)
     if not max_iterations or max_iterations <= 0:
-        max_iterations = 50
+        max_iterations = 100
     if not tabu_list_length or tabu_list_length <= 0:
         tabu_list_length = 20
     
 
+    start_time = time.perf_counter()
     partition_output = _run_fgp_tabu(
         graph.sequence,
         gate_info,
@@ -110,11 +117,27 @@ def fgp_tabu_global(
         pz_names=pz_names,
         max_iterations=max_iterations,
         tabu_list_length=tabu_list_length,
-        capacity_weight=capacity_weight,
-        distance_weight=distance_weight,
+        balance_penalty=balance_penalty,
+        distance_weight_factor=distance_weight_factor,
         pz_positions=pz_positions,
         pz_distance_map=pz_distance_map,
+        enable_plots=enable_plots,
+        randomize_initial=randomize_initial,
+        seed=seed,
     )
+    optimization_time = time.perf_counter() - start_time
+    partition_output["optimization_time"] = optimization_time
+
+    assignments: list[list[int]] = partition_output["qubit_assignments"]  # type: ignore[assignment]
+    slice_plan: list[SlicePlan] = partition_output["slice_plan"]  # type: ignore[assignment]
+    gate_partition_by_pz: dict[str, list[int]] = partition_output["gate_partition_by_pz"]  # type: ignore[assignment]
+    gate_assignment: dict[int, str] = partition_output["gate_assignment"]  # type: ignore[assignment]
+    time_slices: list[list[int]] = partition_output.get("time_slices", [])  # type: ignore[assignment]
+    pre_cost: float = sum(partition_output["pre_partitioning_costs"])  # type: ignore[assignment]
+    post_cost: float = sum(partition_output["post_partitioning_costs"])  # type: ignore[assignment]
+
+    moves = _compute_moves(assignments)
+    move_distance_total = _compute_total_move_distance(moves, pz_positions, pz_distance_map)
 
     if DEBUG_FLAG:
         print("Overview:")
@@ -156,17 +179,9 @@ def fgp_tabu_global(
                 
                 if result.cluster_loads:
                     print(f"\nCluster loads: {result.cluster_loads}")
-
-    assignments: list[list[int]] = partition_output["qubit_assignments"]  # type: ignore[assignment]
-    slice_plan: list[SlicePlan] = partition_output["slice_plan"]  # type: ignore[assignment]
-    gate_partition_by_pz: dict[str, list[int]] = partition_output["gate_partition_by_pz"]  # type: ignore[assignment]
-    gate_assignment: dict[int, str] = partition_output["gate_assignment"]  # type: ignore[assignment]
-    time_slices: list[list[int]] = partition_output.get("time_slices", [])  # type: ignore[assignment]
-    pre_cost: float = sum(partition_output["pre_partitioning_costs"])  # type: ignore[assignment]
-    post_cost: float = sum(partition_output["post_partitioning_costs"])  # type: ignore[assignment]
-
-    moves = _compute_moves(assignments)
-    move_distance_total = _compute_total_move_distance(moves, pz_positions, pz_distance_map)
+        
+        print("Final Cost: ", post_cost)
+        print("Proxy Move Distance: ", move_distance_total)
 
     return FGPResult(
         assignments,
@@ -178,6 +193,7 @@ def fgp_tabu_global(
         post_cost,
         time_slices=time_slices,
         move_distance_total=move_distance_total,
+        optimization_time=optimization_time,
     )
 
 
@@ -188,6 +204,8 @@ def partition_slice(
     *,
     num_pzs: int | None = None,
     previous_qubit_assignment: list[int] | None = None,
+    randomize_initial: bool = False,
+    seed: int | None = None,
 ) -> ContractionResult:
     """Contract the slice graph and produce a greedy initial assignment."""
 
@@ -213,7 +231,7 @@ def partition_slice(
     # greedy initial partitioning
     assignment: list[int] | None = None
     cluster_loads: list[int] | None = None
-    if previous_qubit_assignment is not None:
+    if previous_qubit_assignment is not None and not randomize_initial:
         assignment, cluster_loads = _seed_assignment_from_previous(
             supernodes,
             previous_qubit_assignment,
@@ -221,7 +239,10 @@ def partition_slice(
         )
 
     if assignment is None:
-        assignment, cluster_loads = _greedy_initial_partition(supernodes, num_pzs)
+        assignment, cluster_loads = _greedy_initial_partition(supernodes, num_pzs, randomize_initial, seed)
+    if DEBUG_FLAG:
+        print("Initial Assignment:", assignment)
+
 
     result = ContractionResult(
         supernodes=supernodes,
@@ -339,8 +360,8 @@ def tabu_optimize_global(
     *,
     num_pzs: int,
     capacity: int | None,
-    capacity_weight: float,
-    distance_weight: float,
+    balance_penalty: float,
+    distance_weight_factor: float,
     max_iterations: int,
     tabu_list_length: int,
     num_qubits: int,
@@ -357,6 +378,7 @@ def tabu_optimize_global(
     qubit_assignments_by_slice: list[list[int]] = [
         [-1] * num_qubits for _ in partition_results
     ]
+    active_loads_per_slice: list[dict[int, int]] = []
 
     for slice_idx, result in enumerate(partition_results):
         if result.assignment is None:
@@ -364,15 +386,23 @@ def tabu_optimize_global(
         assignment_copy = result.assignment.copy()
         assignments_by_slice.append(assignment_copy)
         loads = [0] * num_pzs
+        active_qubits = set(result.required_unary)
+        for u, v in result.required_edges:
+            active_qubits.add(u)
+            active_qubits.add(v)
+        active_loads: dict[int, int] = {}
         for sn in result.supernodes:
             cluster = assignment_copy[sn.id]
             if cluster < 0 or cluster >= num_pzs:
                 raise ValueError(f"Supernode {sn.id} assigned to invalid cluster {cluster}.")
-            loads[cluster] += sn.load
+            active_load = sum(1 for q in sn.qubits if q in active_qubits)
+            active_loads[sn.id] = active_load
+            loads[cluster] += active_load
             for qubit in sn.qubits:
                 if 0 <= qubit < num_qubits:
                     qubit_assignments_by_slice[slice_idx][qubit] = cluster
         slice_loads.append(loads)
+        active_loads_per_slice.append(active_loads)
 
     capacity_cost = _compute_capacity_cost(slice_loads, capacity)
     distance_cost = _compute_distance_cost(
@@ -380,7 +410,7 @@ def tabu_optimize_global(
         pz_positions,
         pz_distance_map,
     )
-    current_cost = capacity_weight * capacity_cost + distance_weight * distance_cost
+    current_cost = balance_penalty * capacity_cost + distance_weight_factor * distance_cost
     initial_cost = current_cost
     best_cost = current_cost
     best_assignments = [assignment.copy() for assignment in assignments_by_slice]
@@ -388,6 +418,7 @@ def tabu_optimize_global(
     tabu_list: list[tuple[int, int, int]] = []
     move_counts_per_iteration: list[int] = []
     move_histograms_per_iteration: list[dict[float, int]] = []
+    cost_history: list[float] = []
     for _ in range(max_iterations):
         best_move: tuple[int, Supernode, int] | None = None
         best_move_score = math.inf
@@ -395,6 +426,22 @@ def tabu_optimize_global(
         best_move_distance_delta = 0.0
         move_histogram: dict[float, int] = {}
         total_moves = 0
+        if DEBUG_FLAG and ASSERT_FULL_COST:
+            full_cost_current, _, _ = _compute_global_cost_full(
+                partition_results,
+                assignments_by_slice,
+                num_pzs=num_pzs,
+                capacity=capacity,
+                balance_penalty=balance_penalty,
+                distance_weight_factor=distance_weight_factor,
+                num_qubits=num_qubits,
+                pz_positions=pz_positions,
+                pz_distance_map=pz_distance_map,
+            )
+            if not math.isclose(full_cost_current, current_cost, rel_tol=1e-6, abs_tol=1e-6):
+                raise AssertionError(
+                    f"Full cost {full_cost_current:.6f} does not match cached {current_cost:.6f}"
+                )
 
         for slice_idx, result in enumerate(partition_results):
             for sn in result.supernodes:
@@ -402,11 +449,12 @@ def tabu_optimize_global(
                 for target_cluster in range(num_pzs):
                     if target_cluster == current_cluster:
                         continue
+                    active_load = active_loads_per_slice[slice_idx].get(sn.id, 0)
                     delta_capacity = _capacity_delta(
                         slice_loads[slice_idx],
                         current_cluster,
                         target_cluster,
-                        sn.load,
+                        active_load,
                         capacity,
                     )
                     delta_distance = _distance_delta(
@@ -418,11 +466,31 @@ def tabu_optimize_global(
                         pz_positions,
                         pz_distance_map,
                     )
-                    move_delta = capacity_weight * delta_capacity + distance_weight * delta_distance
+                    move_delta = balance_penalty * delta_capacity + distance_weight_factor * delta_distance
                     candidate_cost = current_cost + move_delta
                     bucket = round(move_delta, 6)
                     move_histogram[bucket] = move_histogram.get(bucket, 0) + 1
                     total_moves += 1
+                    if DEBUG_FLAG and ASSERT_FULL_COST:
+                        assignments_by_slice[slice_idx][sn.id] = target_cluster
+                        full_cost_new, _, _ = _compute_global_cost_full(
+                            partition_results,
+                            assignments_by_slice,
+                            num_pzs=num_pzs,
+                            capacity=capacity,
+                            balance_penalty=balance_penalty,
+                            distance_weight_factor=distance_weight_factor,
+                            num_qubits=num_qubits,
+                            pz_positions=pz_positions,
+                            pz_distance_map=pz_distance_map,
+                        )
+                        assignments_by_slice[slice_idx][sn.id] = current_cluster
+                        delta_full = full_cost_new - full_cost_current
+                        if not math.isclose(delta_full, move_delta, rel_tol=1e-6, abs_tol=1e-6):
+                            raise AssertionError(
+                                "Delta mismatch: "
+                                f"incremental={move_delta:.6f}, full={delta_full:.6f}"
+                            )
                     move_key = (slice_idx, sn.id, target_cluster)
                     if move_key in tabu_list and candidate_cost >= best_cost:
                         continue
@@ -434,9 +502,10 @@ def tabu_optimize_global(
 
         move_counts_per_iteration.append(total_moves)
         move_histograms_per_iteration.append(move_histogram)
-        print(f"Iteration {len(move_counts_per_iteration)}: total_moves={total_moves}")
+        cost_history.append(current_cost)
+        #print(f"Iteration {len(move_counts_per_iteration)}: total_moves={total_moves}")
         for bucket in sorted(move_histogram):
-            print(f"  delta={bucket:.6f} count={move_histogram[bucket]}")
+            pass #print(f"  delta={bucket:.6f} count={move_histogram[bucket]}")
 
         if best_move is None:
             break
@@ -444,8 +513,9 @@ def tabu_optimize_global(
         slice_idx, sn, target_cluster = best_move
         previous_cluster = assignments_by_slice[slice_idx][sn.id]
         assignments_by_slice[slice_idx][sn.id] = target_cluster
-        slice_loads[slice_idx][previous_cluster] -= sn.load
-        slice_loads[slice_idx][target_cluster] += sn.load
+        active_load = active_loads_per_slice[slice_idx].get(sn.id, 0)
+        slice_loads[slice_idx][previous_cluster] -= active_load
+        slice_loads[slice_idx][target_cluster] += active_load
         for qubit in sn.qubits:
             if 0 <= qubit < num_qubits:
                 qubit_assignments_by_slice[slice_idx][qubit] = target_cluster
@@ -454,6 +524,38 @@ def tabu_optimize_global(
         distance_cost += best_move_distance_delta
         current_cost = best_move_score
 
+        if DEBUG_FLAG:
+            result = partition_results[slice_idx]
+            for u, v in result.required_edges:
+                su = result.qubit_to_supernode.get(u)
+                sv = result.qubit_to_supernode.get(v)
+                if su is None or sv is None:
+                    continue
+                if assignments_by_slice[slice_idx][su] != assignments_by_slice[slice_idx][sv]:
+                    raise AssertionError(
+                        f"Required edge cut detected in slice {slice_idx}: ({u}, {v})"
+                    )
+
+            expected_loads = [0] * num_pzs
+            for sn in result.supernodes:
+                cluster = assignments_by_slice[slice_idx][sn.id]
+                expected_loads[cluster] += active_loads_per_slice[slice_idx].get(sn.id, 0)
+            if expected_loads != slice_loads[slice_idx]:
+                raise AssertionError(
+                    f"Cached loads mismatch in slice {slice_idx}: "
+                    f"cached={slice_loads[slice_idx]}, expected={expected_loads}"
+                )
+
+            distance_cost_full = _compute_distance_cost(
+                qubit_assignments_by_slice,
+                pz_positions,
+                pz_distance_map,
+            )
+            if not math.isclose(distance_cost_full, distance_cost, rel_tol=1e-6, abs_tol=1e-6):
+                raise AssertionError(
+                    f"Distance mismatch: cached={distance_cost:.6f}, full={distance_cost_full:.6f}"
+                )
+
         tabu_list.append((slice_idx, sn.id, previous_cluster))
         if len(tabu_list) > tabu_list_length:
             tabu_list.pop(0)
@@ -461,6 +563,25 @@ def tabu_optimize_global(
         if current_cost < best_cost:
             best_cost = current_cost
             best_assignments = [assignment.copy() for assignment in assignments_by_slice]
+
+    if cost_history:
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            plt = None
+        if plt is not None:
+            timestamp = int(time.time())
+            output_dir = Path("outputs/plots")
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = output_dir / f"fgp_tabu_global_cost_evolution_{timestamp}.png"
+            plt.figure(figsize=(8, 4))
+            plt.plot(range(1, len(cost_history) + 1), cost_history, marker="o", linewidth=1)
+            plt.xlabel("Iteration")
+            plt.ylabel("Cost")
+            plt.title("FGP Tabu Global Cost Evolution")
+            plt.tight_layout()
+            plt.savefig(output_path)
+            plt.close()
 
     final_assignments = best_assignments if best_assignments else assignments_by_slice
     return final_assignments, initial_cost, best_cost
@@ -544,6 +665,7 @@ def _compute_capacity_cost(
     if capacity is None:
         return 0.0
     total = 0.0
+    #print(slice_loads)
     for loads in slice_loads:
         for load in loads:
             total += max(0, load - capacity)
@@ -590,6 +712,48 @@ def _distance_between_clusters(
         if src_pz is not None and dst_pz is not None:
             return get_pz_distance(src_pz, dst_pz, pz_distance_map)
     return 1.0
+
+
+def _compute_global_cost_full(
+    partition_results: Sequence[ContractionResult],
+    assignments_by_slice: Sequence[Sequence[int]],
+    *,
+    num_pzs: int,
+    capacity: int | None,
+    balance_penalty: float,
+    distance_weight_factor: float,
+    num_qubits: int,
+    pz_positions: Sequence[ProcessingZone | None] | None,
+    pz_distance_map: dict[tuple[str, str], float] | None,
+) -> tuple[float, list[list[int]], list[list[int]]]:
+    slice_loads: list[list[int]] = []
+    qubit_assignments_by_slice: list[list[int]] = [
+        [-1] * num_qubits for _ in partition_results
+    ]
+    for slice_idx, result in enumerate(partition_results):
+        active_qubits = set(result.required_unary)
+        for u, v in result.required_edges:
+            active_qubits.add(u)
+            active_qubits.add(v)
+        loads = [0] * num_pzs
+        assignment = assignments_by_slice[slice_idx]
+        for sn in result.supernodes:
+            cluster = assignment[sn.id]
+            active_load = sum(1 for q in sn.qubits if q in active_qubits)
+            loads[cluster] += active_load
+            for qubit in sn.qubits:
+                if 0 <= qubit < num_qubits:
+                    qubit_assignments_by_slice[slice_idx][qubit] = cluster
+        slice_loads.append(loads)
+
+    capacity_cost = _compute_capacity_cost(slice_loads, capacity)
+    distance_cost = _compute_distance_cost(
+        qubit_assignments_by_slice,
+        pz_positions,
+        pz_distance_map,
+    )
+    total_cost = balance_penalty * capacity_cost + distance_weight_factor * distance_cost
+    return total_cost, slice_loads, qubit_assignments_by_slice
 
 
 def _compute_moves(assignments: list[list[int]]) -> list[list[tuple[int, int, int]]]:
@@ -755,13 +919,15 @@ def _run_fgp_tabu(
     capacity: int | None,
     pz_names: Sequence[str] | None,
     enable_plots: bool = False,
-    output_dir: Path | None = Path("outputs/fgp_tabu"),
+    output_dir: Path | None = Path("outputs/fgp_tabu_global"),
     max_iterations: int = 50,
     tabu_list_length: int = 20,
-    capacity_weight: float = 1.0,
-    distance_weight: float = 1.0,
+    balance_penalty: float = 1.0,
+    distance_weight_factor: float = 1.0,
     pz_positions: Sequence[ProcessingZone | None] | None = None,
     pz_distance_map: dict[tuple[str, str], float] | None = None,
+    randomize_initial: bool = False,
+    seed: int | None = None,
 
 ) -> dict[str, object]:
     """Core partition routine shared by CLI and API entry points."""
@@ -778,6 +944,8 @@ def _run_fgp_tabu(
             num_qubits=num_qubits,
             num_pzs=num_pzs,
             previous_qubit_assignment=prev_qubit_assignment,
+            randomize_initial=randomize_initial,
+            seed=seed,
         )
         partitioning_results.append(result)
         if num_pzs:
@@ -796,8 +964,8 @@ def _run_fgp_tabu(
             partitioning_results,
             num_pzs=num_pzs,
             capacity=capacity,
-            capacity_weight=capacity_weight,
-            distance_weight=distance_weight,
+            balance_penalty=balance_penalty,
+            distance_weight_factor=distance_weight_factor,
             max_iterations=max_iterations,
             tabu_list_length=tabu_list_length,
             num_qubits=num_qubits,
@@ -871,73 +1039,6 @@ def _run_fgp_tabu(
         "pre_partitioning_costs": [pre_cost],
         "post_partitioning_costs": [post_cost],
     }
-
-
-def _align_clusters_to_previous(
-    partitioning_results: Sequence[ContractionResult],
-    time_slices: Sequence[Sequence[int]],
-    gate_info: dict[int, GateInfo],
-    num_qubits: int,
-    num_pzs: int,
-    *,
-    processing_only: bool = False,
-) -> Sequence[ContractionResult]:
-    prev_qubit_assignment = [-1] * num_qubits
-
-    for slice_idx, result in enumerate(partitioning_results):
-        if result.assignment is None:
-            prev_qubit_assignment = [-1] * num_qubits
-            continue
-
-        if processing_only:
-            active_qubits = {
-                q for gate_id in time_slices[slice_idx] for q in gate_info[gate_id].qubits
-            }
-        else:
-            active_qubits = None
-
-        counts = [[0] * num_pzs for _ in range(num_pzs)]
-        for sn in result.supernodes:
-            cluster = result.assignment[sn.id]
-            if cluster < 0 or cluster >= num_pzs:
-                continue
-            for q in sn.qubits:
-                if active_qubits is not None and q not in active_qubits:
-                    continue
-                prev = prev_qubit_assignment[q]
-                if 0 <= prev < num_pzs:
-                    counts[cluster][prev] += 1
-
-        best_perm = list(range(num_pzs))
-        best_score = sum(counts[i][best_perm[i]] for i in range(num_pzs))
-        
-        # TODO: Improve this, because its combinatorically expensive in num_pzs
-        for perm in itertools.permutations(range(num_pzs)):
-            score = sum(counts[i][perm[i]] for i in range(num_pzs))
-            if score > best_score:
-                best_score = score
-                best_perm = list(perm)
-
-        if best_perm != list(range(num_pzs)):
-            new_assignment = result.assignment.copy()
-            for sn in result.supernodes:
-                cluster = result.assignment[sn.id]
-                if 0 <= cluster < num_pzs:
-                    new_assignment[sn.id] = best_perm[cluster]
-            result.assignment = new_assignment
-
-        cluster_loads = [0] * num_pzs
-        for sn in result.supernodes:
-            cluster = result.assignment[sn.id]
-            if 0 <= cluster < num_pzs:
-                cluster_loads[cluster] += sn.load
-            for q in sn.qubits:
-                if active_qubits is not None and q not in active_qubits:
-                    continue
-                prev_qubit_assignment[q] = cluster
-        result.cluster_loads = cluster_loads
-
-    return partitioning_results  
 
 
 def _load_gate_metadata(qasm_path: Path) -> tuple[list[int], dict[int, GateInfo]]:
@@ -1022,12 +1123,25 @@ def _seed_assignment_from_previous(
 def _greedy_initial_partition(
     supernodes: list[Supernode],
     num_pzs: int,
+    randomize_initial: bool = False,
+    seed: int | None = 0,
 ) -> tuple[list[int], list[int]]:
     """Assign supernodes to PZs by balancing load."""
     if num_pzs <= 0:
         raise ValueError("Number of processing zones must be positive for initial partitioning.")
     assignment = [-1] * len(supernodes)
     cluster_loads = [0] * num_pzs
+
+    if randomize_initial and seed is None:
+        seed = random.randint(0, 1000)
+
+    if seed is not None:
+        rng = random.Random(seed)
+        for sn in supernodes:
+            target_cluster = rng.randrange(num_pzs)
+            assignment[sn.id] = target_cluster
+            cluster_loads[target_cluster] += sn.load
+        return assignment, cluster_loads
 
     for sn in sorted(supernodes, key=lambda node: node.load, reverse=True):
         target_cluster = min(range(num_pzs), key=lambda idx: cluster_loads[idx])
@@ -1460,8 +1574,8 @@ def main() -> None:
         num_qubits=num_qubits,
         num_pzs=args.num_pzs,
         capacity=args.capacity,
-        capacity_weight=args.capacity_weight,
-        distance_weight=args.distance_weight,
+        balance_penalty=args.balance_penalty,
+        distance_weight_factor=args.distance_weight_factor,
         pz_names=None,
         enable_plots=not args.no_plot,
         output_dir=args.output_dir,
