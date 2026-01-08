@@ -6,12 +6,18 @@ import networkx as nx
 from networkx.algorithms.community import kernighan_lin_bisection
 from qiskit import QuantumCircuit
 from qiskit.transpiler.passes import RemoveBarriers, RemoveFinalMeasurements
-from .compilation import _load_qasm_circuit
+from .compilation import rename_all_qregs_in_qasm
 
 
-def read_qasm_file(file_path: Path) -> QuantumCircuit:
+def parse_qasm_to_qiskit(file_path: Path) -> QuantumCircuit:
     #circuit = QuantumCircuit.from_qasm_file(file_path)
-    circuit = _load_qasm_circuit(file_path)
+    qasm_str = file_path.read_text()
+    try:
+        qasm_str = rename_all_qregs_in_qasm(qasm_str)
+    except Exception as e:
+        print(f"Error updating QASM string: {e}.")
+        print(f"parsing original.")
+    circuit = QuantumCircuit.from_qasm_str(qasm_str)
     ## Remove barriers
     circuit = RemoveBarriers()(circuit)
     # Remove measurement operations
@@ -164,7 +170,9 @@ def partition_graph_balanced(graph: nx.Graph[int], n: int) -> list[nx.Graph[int]
 
 
 def get_partition(qasm_file_path: Path, n: int) -> list[list[int]]:
-    circuit = read_qasm_file(qasm_file_path)
+    
+    circuit = parse_qasm_to_qiskit(qasm_file_path)
+
     interaction_graph = construct_interaction_graph(circuit)
 
     partition_graphs = partition_graph_balanced(interaction_graph, n)

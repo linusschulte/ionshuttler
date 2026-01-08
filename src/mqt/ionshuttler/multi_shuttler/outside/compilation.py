@@ -5,10 +5,13 @@ import os
 import re
 from typing import TYPE_CHECKING
 
-from qiskit import QuantumCircuit
+from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
 from qiskit.converters import circuit_to_dagdependency
 from qiskit.dagcircuit import DAGDependency
 from qiskit.transpiler.passes import RemoveBarriers, RemoveFinalMeasurements
+from qiskit.qasm2 import dumps
+from qiskit.qasm3 import loads as parse_qasm3
+
 
 from .cycles import get_state_idxs
 from .graph_utils import create_dist_dict, update_distance_map
@@ -21,6 +24,45 @@ if TYPE_CHECKING:
     from qiskit.dagcircuit import DAGDepNode
 
     from .graph import Graph
+
+
+def rename_all_qregs_in_qasm(qasm_str: str, new_qreg_name="q", new_creg_name="c") -> QuantumCircuit:
+    
+    try:
+        qc = QuantumCircuit.from_qasm_str(qasm_str)
+    except:
+        qc = parse_qasm3(qasm_str)
+
+    print("Original QASM:")
+    print("\n".join(dumps(qc).splitlines()[:10]))
+    print("")
+
+    # New single quantum register
+    qreg_new = QuantumRegister(qc.num_qubits, new_qreg_name)
+
+    # New single classical register (optional but convenient)
+    if qc.num_clbits:
+        creg_new = ClassicalRegister(qc.num_clbits, new_creg_name)
+        qc_new = QuantumCircuit(qreg_new, creg_new)
+        clbit_map = {old: creg_new[i] for i, old in enumerate(qc.clbits)}
+    else:
+        qc_new = QuantumCircuit(qreg_new)
+        clbit_map = {}
+
+    # Map every old qubit (in qc.qubits order) to q_new[i]
+    qubit_map = {old: qreg_new[i] for i, old in enumerate(qc.qubits)}
+
+    qc_new.compose(
+        qc,
+        qubits=[qubit_map[qb] for qb in qc.qubits],
+        clbits=[clbit_map[cb] for cb in qc.clbits] if qc.clbits else None,
+        inplace=True
+    )
+    qasm_new = dumps(qc_new)
+    print("After QASM:")
+    print("\n".join(qasm_new.splitlines()[:10]))
+    return qasm_new
+
 
 
 def is_qasm_file(file_path: Path) -> bool:
@@ -50,8 +92,14 @@ def parse_qasm(filename: Path) -> ParsedCircuit:
     sequence: list[int] = []
     gate_info: dict[int, GateInfo] = {}
     with filename.open(encoding="utf-8") as file:
-        for raw_line in file:
-            line = raw_line.strip()
+        qasm_str = file.read()
+        try:
+            qasm_str = rename_all_qregs_in_qasm(qasm_str)
+        except Exception as e:
+            print(f"Error updating QASM string: {e}.")
+            print(f"parsing original.")
+        for line in qasm_str.splitlines():
+            line = line.strip()
 
             if not line:
                 continue
@@ -70,7 +118,6 @@ def parse_qasm(filename: Path) -> ParsedCircuit:
             gate_id = len(sequence)
             sequence.append(gate_id)
             gate_info[gate_id] = GateInfo(qubits=tuple(qubits), qasm=line)
-
     return ParsedCircuit(sequence=sequence, gate_info=gate_info)
 
 
@@ -174,26 +221,24 @@ def manual_copy_dag(dag: DAGDependency) -> DAGDependency:
     return new_dag
 
 
-def _load_qasm_circuit(filename: Path) -> QuantumCircuit:
-    """Load QASM 2.0 or 3.0 into a QuantumCircuit, trying QASM 2 first then QASM 3."""
-    try:
-        return QuantumCircuit.from_qasm_file(str(filename))
-    except Exception:
-        # Fallback to QASM 3 loader if available
-        try:
-            from qiskit.qasm3 import load as load_qasm3  # type: ignore
-        except Exception as exc:
-            raise
-        return load_qasm3(str(filename))
-
 
 def create_dag(filename: Path) -> DAGDependency:
-    qc = _load_qasm_circuit(filename)
-    # Remove barriers
-    qc = RemoveBarriers()(qc)
-    # Remove measurement operations
-    qc = RemoveFinalMeasurements()(qc)
-    return circuit_to_dagdependency(qc)
+    with filename.open(encoding="utf-8") as file:
+        qasm_str = file.read()
+        try:
+            qasm_str = rename_all_qregs_in_qasm(qasm_str)
+        except Exception as e:
+            print(f"Error updating QASM string: {e}.")
+            print(f"parsing original.")
+        try:
+            qc = QuantumCircuit.from_qasm_str(qasm_str)
+        except:
+            qc = parse_qasm3(qasm_str)
+        # Remove barriers
+        qc = RemoveBarriers()(qc)
+        # Remove measurement operations
+        qc = RemoveFinalMeasurements()(qc)
+        return circuit_to_dagdependency(qc)
 
 
 def create_initial_sequence(filename: Path) -> ParsedCircuit:
