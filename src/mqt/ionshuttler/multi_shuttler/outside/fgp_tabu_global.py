@@ -126,6 +126,7 @@ def fgp_tabu_global(
         seed=seed,
     )
     optimization_time = time.perf_counter() - start_time
+    print("FGP Tabu search optimization time: {:.3f} seconds".format(optimization_time))
     partition_output["optimization_time"] = optimization_time
 
     assignments: list[list[int]] = partition_output["qubit_assignments"]  # type: ignore[assignment]
@@ -367,11 +368,14 @@ def tabu_optimize_global(
     num_qubits: int,
     pz_positions: Sequence[ProcessingZone | None] | None,
     pz_distance_map: dict[tuple[str, str], float] | None,
+    enable_plots: bool = False,
 ) -> tuple[list[list[int]], float, float]:
     """Run a single tabu search over all slices simultaneously."""
 
     if not partition_results or num_pzs <= 0:
         return [], 0.0, 0.0
+
+    pz_distance_matrix = _build_pz_distance_matrix(pz_positions, pz_distance_map)
 
     assignments_by_slice: list[list[int]] = []
     slice_loads: list[list[int]] = []
@@ -409,6 +413,7 @@ def tabu_optimize_global(
         qubit_assignments_by_slice,
         pz_positions,
         pz_distance_map,
+        pz_distance_matrix,
     )
     current_cost = balance_penalty * capacity_cost + distance_weight_factor * distance_cost
     initial_cost = current_cost
@@ -465,6 +470,7 @@ def tabu_optimize_global(
                         qubit_assignments_by_slice,
                         pz_positions,
                         pz_distance_map,
+                        pz_distance_matrix,
                     )
                     move_delta = balance_penalty * delta_capacity + distance_weight_factor * delta_distance
                     candidate_cost = current_cost + move_delta
@@ -550,6 +556,7 @@ def tabu_optimize_global(
                 qubit_assignments_by_slice,
                 pz_positions,
                 pz_distance_map,
+                pz_distance_matrix,
             )
             if not math.isclose(distance_cost_full, distance_cost, rel_tol=1e-6, abs_tol=1e-6):
                 raise AssertionError(
@@ -564,7 +571,7 @@ def tabu_optimize_global(
             best_cost = current_cost
             best_assignments = [assignment.copy() for assignment in assignments_by_slice]
 
-    if cost_history:
+    if enable_plots and cost_history:
         try:
             import matplotlib.pyplot as plt
         except ImportError:
@@ -613,6 +620,7 @@ def _distance_delta(
     qubit_assignments_by_slice: Sequence[Sequence[int]],
     pz_positions: Sequence[ProcessingZone | None] | None,
     pz_distance_map: dict[tuple[str, str], float] | None,
+    pz_distance_matrix: Sequence[Sequence[float]] | None = None,
 ) -> float:
     delta = 0.0
     num_slices = len(qubit_assignments_by_slice)
@@ -631,11 +639,13 @@ def _distance_delta(
                 target_cluster,
                 pz_positions,
                 pz_distance_map,
+                pz_distance_matrix,
             ) - _distance_between_clusters(
                 prev_cluster,
                 curr_cluster,
                 pz_positions,
                 pz_distance_map,
+                pz_distance_matrix,
             )
     if slice_idx < num_slices - 1:
         next_assignments = qubit_assignments_by_slice[slice_idx + 1]
@@ -649,11 +659,13 @@ def _distance_delta(
                 next_cluster,
                 pz_positions,
                 pz_distance_map,
+                pz_distance_matrix,
             ) - _distance_between_clusters(
                 curr_cluster,
                 next_cluster,
                 pz_positions,
                 pz_distance_map,
+                pz_distance_matrix,
             )
     return delta
 
@@ -676,6 +688,7 @@ def _compute_distance_cost(
     qubit_assignments_by_slice: Sequence[Sequence[int]],
     pz_positions: Sequence[ProcessingZone | None] | None,
     pz_distance_map: dict[tuple[str, str], float] | None,
+    pz_distance_matrix: Sequence[Sequence[float]] | None = None,
 ) -> float:
     if len(qubit_assignments_by_slice) <= 1:
         return 0.0
@@ -690,6 +703,7 @@ def _compute_distance_cost(
                 next_cluster,
                 pz_positions,
                 pz_distance_map,
+                pz_distance_matrix,
             )
     return float(total)
 
@@ -699,9 +713,16 @@ def _distance_between_clusters(
     dst_cluster: int,
     pz_positions: Sequence[ProcessingZone | None] | None,
     pz_distance_map: dict[tuple[str, str], float] | None,
+    pz_distance_matrix: Sequence[Sequence[float]] | None = None,
 ) -> float:
     if src_cluster == dst_cluster or src_cluster < 0 or dst_cluster < 0:
         return 0.0
+    if (
+        pz_distance_matrix is not None
+        and 0 <= src_cluster < len(pz_distance_matrix)
+        and 0 <= dst_cluster < len(pz_distance_matrix[src_cluster])
+    ):
+        return pz_distance_matrix[src_cluster][dst_cluster]
     if (
         pz_positions
         and 0 <= src_cluster < len(pz_positions)
@@ -971,6 +992,7 @@ def _run_fgp_tabu(
             num_qubits=num_qubits,
             pz_positions=pz_positions,
             pz_distance_map=pz_distance_map,
+            enable_plots=enable_plots,
         )
         for slice_idx, result in enumerate(partitioning_results):
             result.assignment = optimized_assignments[slice_idx]
@@ -1165,6 +1187,29 @@ def get_pz_distance(
         if key_rev in pz_distance_map:
             return pz_distance_map[key_rev]
     return math.dist(pz1.processing_zone, pz2.processing_zone)
+
+
+def _build_pz_distance_matrix(
+    pz_positions: Sequence[ProcessingZone | None] | None,
+    pz_distance_map: dict[tuple[str, str], float] | None,
+) -> list[list[float]] | None:
+    if not pz_positions:
+        return None
+    size = len(pz_positions)
+    matrix = [[1.0] * size for _ in range(size)]
+    for i in range(size):
+        matrix[i][i] = 0.0
+    for i, pz_i in enumerate(pz_positions):
+        if pz_i is None:
+            continue
+        for j in range(i + 1, size):
+            pz_j = pz_positions[j]
+            if pz_j is None:
+                continue
+            dist = get_pz_distance(pz_i, pz_j, pz_distance_map)
+            matrix[i][j] = dist
+            matrix[j][i] = dist
+    return matrix
 
 
 def _build_pz_distance_map(
