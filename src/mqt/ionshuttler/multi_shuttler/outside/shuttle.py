@@ -319,9 +319,10 @@ def shuttle(
                 for ion in set(move_list) | set((in_and_into_exit_moves_of_pz or {}).keys())
                 if ion in all_cycles
             }
-            if relevant and DEBUG_FLAG:
+            if relevant and DEBUG_FLAG == 2:
                 print(f"[debug][t={timestep}] PZ {pz.name} adjusted cycles: {relevant}")
 
+    
     extra_cycles = apply_memory_zone_manager(
         graph,
         all_cycles,
@@ -360,6 +361,7 @@ def shuttle(
     # now general priority queue picks cycles to rotate
     chains_to_rotate = find_movable_cycles(graph, all_cycles, priority_queue_for_cycles, cycle_or_paths)
     if DEBUG_FLAG:
+        print(f"[debug][t={timestep}] all_cycles: {all_cycles}")
         print(f"[debug][t={timestep}] chains_to_rotate: {chains_to_rotate}")
         for ion in chains_to_rotate:
             path = all_cycles.get(ion)
@@ -518,6 +520,7 @@ def main(
     unique_folder = pathlib.Path("runs") / datetime.now().strftime("%Y%m%d_%H%M%S")
     # Ensure folders exist even if graph.save is False (for plot_state outputs)
     unique_folder.mkdir(exist_ok=True, parents=True)
+
     dag_folder = unique_folder / "dags"
     if save_dag:
         dag_folder.mkdir(exist_ok=True, parents=True)
@@ -641,12 +644,29 @@ def main(
         else:
             # -> important for 2-qubit gates
             # -> leave ion in processing zone if needed in a 2-qubit gate
+            required_by_earlier_2q: set[int] = set()
+            for earlier_gate_id in graph.sequence:
+                earlier_qubits = graph.gate_qubits(earlier_gate_id)
+                if len(earlier_qubits) != 2:
+                    continue
+                ion_a, ion_b = earlier_qubits
+                is_ready = False
+                for pz in graph.pzs:
+                    next_qubits = next_gate_qubits_by_pz.get(pz.name, ())
+                    if ion_a in next_qubits and ion_b in next_qubits:
+                        if graph.state[ion_a] == pz.parking_edge and graph.state[ion_b] == pz.parking_edge:
+                            is_ready = True
+                            break
+                if not is_ready:
+                    required_by_earlier_2q.update({ion_a, ion_b})
             for i in range(min(len(graph.pzs), len(graph.sequence))):
                 gate_id = graph.sequence[i]
                 qubits = graph.gate_qubits(gate_id)
 
                 if len(qubits) == 2:
                     ion1, ion2 = qubits
+                    if ion1 in required_by_earlier_2q or ion2 in required_by_earlier_2q:
+                        continue
                     for pz in graph.pzs:
                         state1 = graph.state[ion1]
                         state2 = graph.state[ion2]
@@ -742,6 +762,7 @@ def main(
                     raise ValueError(msg)
             gates_processed.extend([gate_id_lookup.get(gate_node.node_id) for gate_node in processed_nodes.values()])
             processed_gate_counter.append(processed_gate_counter[-1]+len(processed_nodes))
+            
 
 
         else:
@@ -804,8 +825,11 @@ def main(
 
         gates_processed.extend(processed_gate_ids)
 
+        if DEBUG_FLAG:
+            print(f"[debug][t={timestep}] processed_gates: {len(gates_processed)}")
+            print(f"[debug][t={timestep}] last 5 gates processed: {[ (gate_id, graph.gate_info[gate_id]) for gate_id in gates_processed[-5:]]}")
+            print(f"[debug][t={timestep}] next 5 gates to process: {[ (gate_id, graph.gate_info[gate_id]) for gate_id in graph.sequence[:5]]}")
 
-        
 
         # Remove processed ions from the sequence (and dag if use_dag)
         if plan_active and current_plan is not None:
@@ -920,5 +944,6 @@ def main(
         timestep += 1
 
     print(f"\rTimestep: {timestep}/{int(max_timesteps)}", end="", flush=True)
+
 
     return timestep#, processed_gate_counter
