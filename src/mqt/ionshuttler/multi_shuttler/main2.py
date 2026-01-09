@@ -16,6 +16,7 @@ from qiskit import QuantumCircuit
 import h5py
 import numpy as np
 from scipy.stats import qmc
+from outside import plotting as plotting_mod, shuttle as shuttle_mod
 try:
     import matplotlib.pyplot as plt  # type: ignore
 except Exception:
@@ -37,6 +38,7 @@ from outside.shuttle import main as run_shuttle_main
 from outside.partition import parse_qasm_to_qiskit
 
 from outside.helper import generate_pzs, recalculate_architecture_config
+from make_timeline_dev import FrameCollector, infer_pz_side
 
 LEGACY_CLI_COMMAND = "mqt-ionshuttler-heuristic"
 _SIM_TIMESTEPS_RE = re.compile(r"Simulation finished in\s+(?P<value>\d+)\s+timesteps")
@@ -152,6 +154,7 @@ def main(config: dict[str, Any]):
     save_flag = config.get("save", False)
     failing_junctions = config.get("failing_junctions", 0)
     debug_gate_tracking = config.get("debug_gate_tracking", False)
+    timeline_output = config.get("timeline_output")
 
 
     # Define base path for QASM files if needed
@@ -218,6 +221,10 @@ def main(config: dict[str, Any]):
     graph.plot = plot_flag
     graph.save = save_flag
     graph.arch = str(arch)  # For plotting/logging
+    graph.m = m
+    graph.n = n
+    graph.v = v
+    graph.h = h
     graph.debug_gate_tracking = debug_gate_tracking
     graph.enable_memory_zone_manager = config.get("enable_memory_zone_manager", False)
 
@@ -524,6 +531,20 @@ def main(config: dict[str, Any]):
     for pz in graph.pzs:
         pz.getting_processed = []  # Track nodes being processed by this PZ
 
+    collector = None
+    if timeline_output:
+        collector = FrameCollector()
+        _REAL_PLOT_STATE = plotting_mod.plot_state
+
+        def _patched_plot_state(g, *args, **kwargs):
+            return collector.capture(g, *args, **kwargs)
+
+        plotting_mod.plot_state = _patched_plot_state
+        shuttle_mod.plot_state = _patched_plot_state
+        collector.attach_to_graph(graph)
+        graph.plot = True
+        #graph.save = False
+
     print("\nStarted shuttling simulation...")
 
     # Run the main shuttling logic
@@ -540,6 +561,35 @@ def main(config: dict[str, Any]):
     # --- Results ---
     end_time = datetime.now()
     cpu_time = end_time - start_time
+
+    if collector:
+        maxR = (m - 1) * v
+        maxC = (n - 1) * h
+        sides_present: dict[str, bool] = {}
+        for pz in graph.pzs:
+            side = infer_pz_side(pz, maxR, maxC)
+            sides_present[side] = True
+        for s in ["top", "right", "bottom", "left"]:
+            sides_present.setdefault(s, False)
+
+        architecture = {
+            "grid": {"rows": m, "cols": n},
+            "sites": {"vertical": v, "horizontal": h},
+            "pzs": sides_present,
+            "innerPZEdges": [],
+        }
+        payload = {
+            "architecture": architecture,
+            "grid": architecture["grid"],
+            "sites": architecture["sites"],
+            "pzs": architecture["pzs"],
+            "innerPZEdges": architecture["innerPZEdges"],
+            "timeline": collector.frames,
+        }
+        out_path = pathlib.Path(timeline_output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(payload, separators=(",", ":")))
+        print(f"Wrote timeline JSON to {out_path} ({len(collector.frames)} frames).")
 
     #print(f"\nSimulation finished in {final_timesteps} timesteps.")
     #print(f"Total CPU time: {cpu_time}")
