@@ -157,6 +157,8 @@ def main(config: dict[str, Any]):
     save_flag = config.get("save", False)
     failing_junctions = config.get("failing_junctions", 0)
     debug_gate_tracking = config.get("debug_gate_tracking", False)
+    gate_time_one_qubit = config.get("gate_time_one_qubit")
+    gate_time_two_qubit = config.get("gate_time_two_qubit")
 
 
     # Define base path for QASM files if needed
@@ -544,6 +546,12 @@ def main(config: dict[str, Any]):
     print("\nStarted shuttling simulation...")
 
     # Run the main shuttling logic
+    shuttle_kwargs = {}
+    if gate_time_one_qubit is not None:
+        shuttle_kwargs["gate_time_one_qubit"] = gate_time_one_qubit
+    if gate_time_two_qubit is not None:
+        shuttle_kwargs["gate_time_two_qubit"] = gate_time_two_qubit
+
     final_timesteps = run_shuttle_main(
         graph,
         dag,
@@ -552,6 +560,7 @@ def main(config: dict[str, Any]):
         gate_partition=gate_partition_for_run,
         slice_plan=slice_plan_for_run,
         max_timesteps=max_timesteps,
+        **shuttle_kwargs,
     )
 
     # --- Results ---
@@ -629,8 +638,6 @@ def predictor_test_function(config: dict[str, Any]) -> None:
         raise ValueError(msg)
 
     n_circuits = config.get("n_circuits")
-    if n_circuits is not None:
-        n_circuits = int(n_circuits)
     max_qubits = config.get("max_qubits", 15)
     target_qubits = config.get("num_ions")
 
@@ -656,6 +663,18 @@ def predictor_test_function(config: dict[str, Any]) -> None:
             group.create_dataset(name, data=np.array(json.dumps(payload), dtype=dtype))
         except Exception as exc:  # pragma: no cover - best-effort diagnostic
             print(f"Warning: could not store dataset '{name}': {exc}")
+
+    def _parameter_set_exists(results_group: h5py.Group, run_params: dict[str, object]) -> bool:
+        for run_name in results_group.keys():
+            run_group = results_group[run_name]
+            match = all(
+                np.array_equal(run_group.attrs.get(k), v) if isinstance(run_group.attrs.get(k), np.ndarray)
+                else run_group.attrs.get(k) == v
+                for k, v in run_params.items()
+            )
+            if match:
+                return True
+        return False
 
     with h5py.File(results_path, "a") as f:
         if "results" not in f:
@@ -699,13 +718,25 @@ def predictor_test_function(config: dict[str, Any]) -> None:
             run_config["num_ions"] = num_ions
             run_config["qasm_file_path"] = str(qasm_file)
 
+            run_params = {
+                "circuit_name": circuit_name,
+                "qasm_file": str(qasm_file),
+                "num_ions": num_ions,
+                "algorithm_name": circuit_name,
+                "gate_count": gate_count,
+                "gate_time_one_qubit": run_config.get("gate_time_one_qubit", "None"),
+                "gate_time_two_qubit": run_config.get("gate_time_two_qubit", "None"),
+            }
+            if _parameter_set_exists(results_group, run_params):
+                print("")
+                print(f"Skipping existing parameter set: {run_params}")
+                skipped += 1
+                continue
+
             run_name = f"run_{result_index:04d}"
             run_group = results_group.create_group(run_name)
-            run_group.attrs["circuit_name"] = circuit_name
-            run_group.attrs["qasm_file"] = str(qasm_file)
-            run_group.attrs["num_ions"] = num_ions
-            run_group.attrs["algorithm_name"] = circuit_name
-            run_group.attrs["gate_count"] = gate_count
+            for key, value in run_params.items():
+                run_group.attrs[key] = value
 
             try:
                 (
@@ -742,6 +773,7 @@ def predictor_test_function(config: dict[str, Any]) -> None:
                 )
                 if partition_param_trials:
                     _write_json_dataset(run_group, "partition_param_trials", partition_param_trials)
+                result_index += 1
             except KeyboardInterrupt:
                 print("Interrupted by user. Current configuration will be retried on the next run.")
                 del results_group[run_name]
@@ -750,7 +782,7 @@ def predictor_test_function(config: dict[str, Any]) -> None:
                 run_group.attrs["error_message"] = str(exc)
                 run_group.attrs["success"] = False
 
-            result_index += 1
+            
 
         print(f"Completed {result_index} runs. Skipped {skipped}. Results saved to {results_path}.")
 if __name__ == "__main__":
@@ -1009,6 +1041,7 @@ if __name__ == "__main__":
         for run_params in valid_combinations:
             # Check if this parameter set already exists
             if parameter_set_exists(f, run_params):
+
                 print(f"\nSkipping existing parameter set: {run_params}")
                 skipped += 1
 
@@ -1030,6 +1063,8 @@ if __name__ == "__main__":
                 'pz_numbers_to_use': lambda v: v,
                 'optimize_params': lambda v: v,
                 'algorithm_name': lambda v: v,
+                'gate_time_one_qubit': lambda v: v,
+                'gate_time_two_qubit': lambda v: v
             }
             
             # Apply direct parameter mappings
