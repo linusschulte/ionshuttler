@@ -33,9 +33,9 @@ def rename_all_qregs_in_qasm(qasm_str: str, new_qreg_name="q", new_creg_name="c"
     except:
         qc = parse_qasm3(qasm_str)
 
-    print("Original QASM:")
-    print("\n".join(dumps(qc).splitlines()[:10]))
-    print("")
+    #print("Original QASM:")
+    #print("\n".join(dumps(qc).splitlines()[:10]))
+    #print("")
 
     # New single quantum register
     qreg_new = QuantumRegister(qc.num_qubits, new_qreg_name)
@@ -59,8 +59,8 @@ def rename_all_qregs_in_qasm(qasm_str: str, new_qreg_name="q", new_creg_name="c"
         inplace=True
     )
     qasm_new = dumps(qc_new)
-    print("After QASM:")
-    print("\n".join(qasm_new.splitlines()[:10]))
+    #print("After QASM:")
+    #print("\n".join(qasm_new.splitlines()[:10]))
     return qasm_new
 
 

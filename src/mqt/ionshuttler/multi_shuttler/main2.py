@@ -155,6 +155,8 @@ def main(config: dict[str, Any]):
     failing_junctions = config.get("failing_junctions", 0)
     debug_gate_tracking = config.get("debug_gate_tracking", False)
     timeline_output = config.get("timeline_output")
+    gate_time_one_qubit = config.get("gate_time_one_qubit")
+    gate_time_two_qubit = config.get("gate_time_two_qubit")
 
 
     # Define base path for QASM files if needed
@@ -548,6 +550,12 @@ def main(config: dict[str, Any]):
     print("\nStarted shuttling simulation...")
 
     # Run the main shuttling logic
+    shuttle_kwargs = {}
+    if gate_time_one_qubit is not None:
+        shuttle_kwargs["gate_time_one_qubit"] = gate_time_one_qubit
+    if gate_time_two_qubit is not None:
+        shuttle_kwargs["gate_time_two_qubit"] = gate_time_two_qubit
+
     final_timesteps = run_shuttle_main(
         graph,
         dag,
@@ -556,6 +564,7 @@ def main(config: dict[str, Any]):
         gate_partition=gate_partition_for_run,
         slice_plan=slice_plan_for_run,
         max_timesteps=max_timesteps,
+        **shuttle_kwargs,
     )
 
     # --- Results ---
@@ -719,7 +728,7 @@ if __name__ == "__main__":
     #unique_id = "generated_0.71_0.7_num_ions_4pzs"
     #unique_id = "balance_distance_sweep_20ions_4pzs"
     #unique_id = "num_pzs_mean_std_allswept_4pzs"
-    unique_id = "fgp_tabu_global_benchmark_15ions_6pzs_2perpz_NODAG"
+    unique_id = "fgp_tabu_global_benchmark_15ions_6pzs_2perpz_NODAG_2"
 
     # Declare partitioning algorithm parameters
     fgp_tabu = {
@@ -740,9 +749,9 @@ if __name__ == "__main__":
         'params': {
             'balance_penalty': [5], #np.linspace(0.1, 5, 40),  #[0.6],
             'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
-            'max_iterations':   [500, 2000], #list(range(0, 500+1, 100)),
+            'max_iterations':   [3000], #list(range(0, 500+1, 100)),
             'tabu_list_length': [200],
-            'seed': range(5)
+            'seed': range(3)
         },
         '_sampling': {
             'method': 'lhs',
@@ -763,12 +772,11 @@ if __name__ == "__main__":
     rehome = {'name': 'rehome', 'params': {}}
 
 
-
     meta_study_config = {
-        #"algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2", "qaoa_nativegates_quantinuum_opt2", "qpeexact_nativegates_quantinuum_qiskit_opt2", "random_nativegates_quantinuum_qiskit_opt2"],
-        "algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2", "qaoa_nativegates_quantinuum_opt2", "random_nativegates_quantinuum_qiskit_opt2"],
+        "algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2", "qaoa_nativegates_quantinuum_opt2", "qpeexact_nativegates_quantinuum_qiskit_opt2", "random_nativegates_quantinuum_qiskit_opt2"],
+        #"algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2", "qaoa_nativegates_quantinuum_opt2", "random_nativegates_quantinuum_qiskit_opt2"],
         # Core architecture parameters
-        'num_ions': [15],
+        'num_ions': [10, 15, 20, 30],
         'num_pzs': [6],
         'ions_per_pz': [3],
         'grid_size': [4],
@@ -931,6 +939,8 @@ if __name__ == "__main__":
                 'pz_numbers_to_use': lambda v: v,
                 'optimize_params': lambda v: v,
                 'algorithm_name': lambda v: v,
+                'gate_time_one_qubit': lambda v: v,
+                'gate_time_two_qubit': lambda v: v
             }
             
             # Apply direct parameter mappings
@@ -969,6 +979,8 @@ if __name__ == "__main__":
 
             # Store all run parameters as attributes
             for key, value in run_params.items():
+                if value == None:
+                    value = 'None'
                 run_group.attrs[key] = value
             
             try:

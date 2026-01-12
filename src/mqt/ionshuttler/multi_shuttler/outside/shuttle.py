@@ -510,6 +510,8 @@ def main(
     slice_plan: list[SlicePlan] | None = None,
     max_timesteps: int = 100000,
     save_dag: bool = False,
+    gate_time_one_qubit: int = GATE_TIME_1Q,
+    gate_time_two_qubit: int = GATE_TIME_2Q,
 ) -> int:
     
     timestep = 0
@@ -719,7 +721,7 @@ def main(
                         pz.gate_execution_finished = False
                         pz.getting_processed.append(gate_node)
                         pz.time_in_pz_counter += 1
-                        gate_time = 1
+                        gate_time = gate_time_one_qubit
 
                         if pz.time_in_pz_counter == gate_time:
                             processed_nodes[pz_name] = gate_node
@@ -744,8 +746,8 @@ def main(
                         pz.getting_processed.append(gate_node)
                         pz.time_in_pz_counter += 1
 
-                        gate_time_2q = GATE_TIME_2Q
-                        if pz.time_in_pz_counter == gate_time_2q:
+                        #gate_time_two_qubit = GATE_TIME_2Q
+                        if pz.time_in_pz_counter == gate_time_two_qubit:
                             processed_nodes[pz_name] = gate_node
                             # # rehome the moved ion to the executing PZ - now done when selecting pz for 2-qubit gate in scheduling
                             if REHOME == True:
@@ -782,7 +784,7 @@ def main(
                         ):
                             pz.gate_execution_finished = False
                             pz.time_in_pz_counter += 1
-                            gate_time = 1
+                            gate_time = gate_time_one_qubit
                             if pz.time_in_pz_counter == gate_time:
                                 processed_gate_ids.insert(0, gate_id)
                                 gate_processed = True
@@ -803,8 +805,8 @@ def main(
                             pz.gate_execution_finished = False
                             pz.time_in_pz_counter += 1
 
-                            gate_time_2q = GATE_TIME_2Q
-                            if pz.time_in_pz_counter == gate_time_2q:
+                            #gate_time_two_qubit = GATE_TIME_2Q
+                            if pz.time_in_pz_counter == gate_time_two_qubit:
                                 processed_gate_ids.insert(0, gate_id)
                                 gate_processed = True
                                 if REHOME == True:
@@ -854,7 +856,7 @@ def main(
                             or "OP"
                         )
                         qubits = list(getattr(gate_node, "qindices", [q._index for q in getattr(gate_node, "qargs", [])]))
-                        duration = GATE_TIME_2Q if len(qubits) >= 2 else GATE_TIME_1Q
+                        duration = gate_time_two_qubit if len(qubits) >= 2 else gate_time_one_qubit
                         execs.append({
                             "id": f"t{timestep}_{pz_name}",
                             "type": gtype,
@@ -887,7 +889,7 @@ def main(
                 execs = []
                 for i, gate_id in enumerate(processed_gate_ids):
                     gate_qubits = graph.gate_qubits(gate_id)
-                    duration = GATE_TIME_2Q if len(gate_qubits) >= 2 else GATE_TIME_1Q
+                    duration = gate_time_two_qubit if len(gate_qubits) >= 2 else gate_time_one_qubit
                     # Find pz for this gate's ions (last used above)
                     # We attach the first matching PZ where both ions (or single) are in parking
                     pz_used = None
