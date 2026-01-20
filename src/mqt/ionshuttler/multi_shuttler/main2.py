@@ -107,6 +107,11 @@ def _calculate_timestep_lower_bound(graph, slice_plan: list[list[int]] | None = 
     return timestep_lower_bound
 
 
+def _infer_num_ions_from_qasm(qasm_file_path: pathlib.Path) -> int:
+    qc = parse_qasm_to_qiskit(qasm_file_path)
+    return qc.num_qubits
+
+
 def run_legacy_cli_with_config(config: dict[str, Any]) -> tuple[int, timedelta]:
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp_file:
         json.dump(config, tmp_file)
@@ -157,6 +162,7 @@ def main(config: dict[str, Any]):
     timeline_output = config.get("timeline_output")
     gate_time_one_qubit = config.get("gate_time_one_qubit")
     gate_time_two_qubit = config.get("gate_time_two_qubit")
+    qasm_file_path_cfg = config.get("qasm_file_path")
 
 
     # Define base path for QASM files if needed
@@ -171,17 +177,19 @@ def main(config: dict[str, Any]):
         msg = "Config parameter 'arch' is required but not set"
         raise ValueError(msg)
 
-    if algorithm_name is None:
+    if algorithm_name is None and qasm_file_path_cfg is None:
         msg = "Config parameter 'algorithm_name' is required but not set"
         raise ValueError(msg)
 
-    if num_ions is None:
+    if num_ions is None and qasm_file_path_cfg is None:
         msg = "Config parameter 'num_ions' is required but not set"
         raise ValueError(msg)
 
     if not isinstance(arch, list) or len(arch) != 4:
         msg = "Config parameter 'arch' must be a list of 4 integers [m, n, v, h]"
         raise ValueError(msg)
+
+    
 
     # --- Setup ---
     start_time = datetime.now()
@@ -236,7 +244,18 @@ def main(config: dict[str, Any]):
     else:
         gate_densities_string = ""
 
-    qasm_file_path = qasm_base_dir / (algorithm_name+f"{gate_densities_string}") / f"{algorithm_name}{gate_densities_string}_{num_ions}.qasm"
+    if qasm_file_path_cfg is not None:
+        qasm_file_path = pathlib.Path(qasm_file_path_cfg)
+        if algorithm_name is None:
+            algorithm_name = qasm_file_path.stem
+        if num_ions is None:
+            num_ions = _infer_num_ions_from_qasm(qasm_file_path)
+    else:
+        qasm_file_path = (
+            qasm_base_dir
+            / f"{algorithm_name}"
+            / f"{algorithm_name}{gate_densities_string}_{num_ions}.qasm"
+        )
     # Parse and plot the circuit using Qiskit
 
     try:
@@ -298,7 +317,7 @@ def main(config: dict[str, Any]):
                 part = [*part[: len(graph.pzs) - 1], merged]
 
         partitions = {pz.name: part[i] for i, pz in enumerate(graph.pzs)}
-        #print(f"Partitions: {partitions}")
+        print(f"Partitions: {partitions}")
     else:
         # Fallback: Assign ions to closest PZ (example logic)
         print("Disabling Partitioning has to be implemented.")
@@ -534,7 +553,10 @@ def main(config: dict[str, Any]):
         pz.getting_processed = []  # Track nodes being processed by this PZ
 
     collector = None
+    
     if timeline_output:
+        algo = str(gate_partition_algorithm_cfg["name"]) if gate_partition_algorithm_cfg is not None else "none"
+        timeline_output = timeline_output + "_" + algorithm_name + "_" + algo + ".json"
         collector = FrameCollector()
         _REAL_PLOT_STATE = plotting_mod.plot_state
 
@@ -699,12 +721,24 @@ if __name__ == "__main__":
         if 'results' not in f:
             return False
         results_group = f['results']
+        def _normalize_attr(value):
+            if isinstance(value, np.ndarray):
+                return value
+            if hasattr(value, "item"):
+                try:
+                    value = value.item()
+                except Exception:
+                    pass
+            if value == 'None':
+                return None
+            return value
+
         for run_name in results_group.keys():
             run_group = results_group[run_name]
             # Check all stored attributes match the run parameters
             match = all(
                 np.array_equal(run_group.attrs.get(k), v) if isinstance(run_group.attrs.get(k), np.ndarray)
-                else run_group.attrs.get(k) == v
+                else _normalize_attr(run_group.attrs.get(k)) == _normalize_attr(v)
                 for k, v in run_params.items()
             )
             if match:
@@ -721,6 +755,20 @@ if __name__ == "__main__":
         except Exception as exc:  # pragma: no cover - best-effort diagnostic
             print(f"Warning: could not store dataset '{name}': {exc}")
 
+    qasm_folder = config.get("qasm_folder")
+    max_qasm_lines = config.get("max_qasm_lines")
+    qasm_files: list[pathlib.Path] | None = None
+    if qasm_folder:
+        qasm_dir = pathlib.Path(qasm_folder)
+        if not qasm_dir.is_dir():
+            print(f"Error: QASM folder does not exist or is not a directory: {qasm_dir}")
+            sys.exit(1)
+        qasm_files = sorted(qasm_dir.glob("*.qasm"))
+        qasm_files.extend(sorted(qasm_dir.glob("*.qasm3")))
+        if not qasm_files:
+            print(f"No QASM files found in {qasm_dir}")
+            sys.exit(1)
+
     #################################################################################################################
     # Meta study configuration
     plot_move_hist = False
@@ -728,7 +776,7 @@ if __name__ == "__main__":
     #unique_id = "generated_0.71_0.7_num_ions_4pzs"
     #unique_id = "balance_distance_sweep_20ions_4pzs"
     #unique_id = "num_pzs_mean_std_allswept_4pzs"
-    unique_id = "fgp_tabu_global_benchmark_15ions_6pzs_2perpz_NODAG_2"
+    unique_id = "fgp_tabu_global_feature_test_4pzs_3perpz_NODAG_2"
 
     # Declare partitioning algorithm parameters
     fgp_tabu = {
@@ -749,13 +797,48 @@ if __name__ == "__main__":
         'params': {
             'balance_penalty': [5], #np.linspace(0.1, 5, 40),  #[0.6],
             'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
-            'max_iterations':   [3000], #list(range(0, 500+1, 100)),
+            'max_iterations':   [1000], #list(range(0, 500+1, 100)),
             'tabu_list_length': [200],
-            'seed': range(3)
+            'seed': range(5),
+            'candidate_list_length': [None],
         },
         '_sampling': {
             'method': 'lhs',
             'num_samples': 10,
+        },
+    }
+    fgp_tabu_global_mini = {
+        'name': 'fgp_tabu_global',
+        'params': {
+            'balance_penalty': [5], #np.linspace(0.1, 5, 40),  #[0.6],
+            'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
+            'max_iterations':   [2500], #list(range(0, 500+1, 100)),
+            'tabu_list_length': [200],
+            'seed': range(5),
+            'candidate_list_length': [300],
+        },
+    }
+    fgp_tabu_global_mini_quota = {
+        'name': 'fgp_tabu_global',
+        'params': {
+            'balance_penalty': [5], #np.linspace(0.1, 5, 40),  #[0.6],
+            'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
+            'max_iterations':   [2500], #list(range(0, 500+1, 100)),
+            'tabu_list_length': [200],
+            'seed': range(5),
+            'candidate_list_length': [200],
+            'per_slice_quota': [1],
+        },
+    }
+    fgp_tabu_global_slack = {
+        'name': 'fgp_tabu_global',
+        'params': {
+            'balance_penalty': [5], #np.linspace(0.1, 5, 40),  #[0.6],
+            'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
+            'max_iterations':   [1000], #list(range(0, 500+1, 100)),
+            'tabu_list_length': [200],
+            'seed': range(5),
+            'slack_dropoff' : [1],
         },
     }
     fgp_kl = {
@@ -774,14 +857,14 @@ if __name__ == "__main__":
 
     meta_study_config = {
         "algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2", "qaoa_nativegates_quantinuum_opt2", "qpeexact_nativegates_quantinuum_qiskit_opt2", "random_nativegates_quantinuum_qiskit_opt2"],
-        #"algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2", "qaoa_nativegates_quantinuum_opt2", "random_nativegates_quantinuum_qiskit_opt2"],
+        #"algorithm_name": ["random_nativegates_quantinuum_qiskit_opt2"],
         # Core architecture parameters
-        'num_ions': [10, 15, 20, 30],
-        'num_pzs': [6],
+        'num_ions': [15,20,30],
+        'num_pzs': [4],
         'ions_per_pz': [3],
         'grid_size': [4],
-        'mz_trap_size': [2],
-        'pz_numbers_to_use': [[1,9,6,3,11,8]], 
+        'mz_trap_size': [1],
+        #'pz_numbers_to_use': [[1,9,6,3,11,8]], 
         'use_dag': [False],
         'enforce_slice_plan': [False],
         'enable_memory_zone_manager': [False],
@@ -797,8 +880,12 @@ if __name__ == "__main__":
             {'name': 'none'},  # No partitioning
             #fgp_tabu,
             fgp_tabu_global,
+            #fgp_tabu_global_mini,
+            fgp_tabu_global_mini_quota,
+            fgp_tabu_global_slack
             #fgp_kl,
             #fgp_roee,
+            #rehome
         ]
     }
 
@@ -906,6 +993,8 @@ if __name__ == "__main__":
         result_index = existing_runs
         
         total_combinations = len(valid_combinations)
+        if qasm_files:
+            total_combinations *= len(qasm_files)
         skipped = 0
         
         print(f"Total combinations: {total_combinations}")
@@ -916,131 +1005,181 @@ if __name__ == "__main__":
         move_dist_records: list[float] = []
 
         for run_params in valid_combinations:
-            # Check if this parameter set already exists
-            if parameter_set_exists(f, run_params):
-                print(f"\nSkipping existing parameter set: {run_params}")
-                skipped += 1
-
-                continue
-            
-            # Update config for this run
-            # Define mapping from run_params keys to config keys and their transformations
-            param_mapping = {
-                'num_ions': lambda v: v,
-                'num_pzs': lambda v: v,
-                'ions_per_pz': ('max_ions_per_pz', lambda v: v),
-                'use_dag': lambda v: v,
-                'enforce_slice_plan': lambda v: v,
-                'save': lambda v: v,
-                'plot': lambda v: v,
-                'grid_size': ('arch', lambda v: [v, v, run_params['mz_trap_size'], run_params['mz_trap_size']]),
-                'gate_density': lambda v: v,
-                'enable_memory_zone_manager': lambda v: v,
-                'pz_numbers_to_use': lambda v: v,
-                'optimize_params': lambda v: v,
-                'algorithm_name': lambda v: v,
-                'gate_time_one_qubit': lambda v: v,
-                'gate_time_two_qubit': lambda v: v
-            }
-            
-            # Apply direct parameter mappings
-            for param_key, param_value in run_params.items():
-                if param_key in param_mapping:
-                    mapping = param_mapping[param_key]
-                    if isinstance(mapping, tuple):
-                        config_key, transform = mapping
-                        config[config_key] = transform(param_value)
+            run_qasm_files = qasm_files if qasm_files else [None]
+            for qasm_file in run_qasm_files:
+                run_params_for_file = run_params.copy()
+                inferred_num_ions = None
+                if qasm_file is not None:
+                    circuit_name = qasm_file.stem
+                    try:
+                        inferred_num_ions = _infer_num_ions_from_qasm(qasm_file)
+                    except Exception as exc:
+                        print(f"Skipping {qasm_file}: could not infer qubits ({exc})")
+                        skipped += 1
+                        continue
+                    if max_qasm_lines is not None:
+                        try:
+                            with qasm_file.open("r", encoding="utf-8", errors="ignore") as handle:
+                                line_count = sum(1 for _ in handle)
+                        except Exception as exc:
+                            print(f"Skipping {qasm_file}: could not count lines ({exc})")
+                            skipped += 1
+                            continue
+                        if line_count > max_qasm_lines:
+                            print(
+                                f"Skipping {qasm_file}: line_count={line_count} exceeds max_qasm_lines={max_qasm_lines}"
+                            )
+                            skipped += 1
+                            continue
+                    target_qubits = run_params.get("num_ions", config.get("num_ions"))
+                    if isinstance(target_qubits, (list, tuple, set)):
+                        allowed_qubits = {int(val) for val in target_qubits}
+                    elif target_qubits is None:
+                        allowed_qubits = set()
                     else:
-                        config[param_key] = mapping(param_value)
-            
-            # Handle partitioning algorithm
-            if run_params['partitioning_algorithm'] == 'none':
-                config.pop("gate_partition_algorithm", None)
-            else:
-                # Extract algorithm parameters from run_params
-                algo_params = {
-                    key.replace('algo_', ''): value 
-                    for key, value in run_params.items() 
-                    if key.startswith('algo_')
+                        allowed_qubits = {int(target_qubits)}
+                    if allowed_qubits and inferred_num_ions not in allowed_qubits:
+                        skipped += 1
+                        continue
+                    run_params_for_file["algorithm_name"] = circuit_name
+                    run_params_for_file["circuit_name"] = circuit_name
+                    run_params_for_file["qasm_file"] = str(qasm_file)
+                    run_params_for_file["num_ions"] = int(inferred_num_ions)
+
+                # Check if this parameter set already exists
+                if parameter_set_exists(f, run_params_for_file):
+                    print(f"\nSkipping existing parameter set: {run_params_for_file}")
+                    skipped += 1
+                    continue
+
+                # Update config for this run
+                # Define mapping from run_params keys to config keys and their transformations
+                param_mapping = {
+                    'num_ions': lambda v: v,
+                    'num_pzs': lambda v: v,
+                    'ions_per_pz': ('max_ions_per_pz', lambda v: v),
+                    'use_dag': lambda v: v,
+                    'enforce_slice_plan': lambda v: v,
+                    'save': lambda v: v,
+                    'plot': lambda v: v,
+                    'grid_size': ('arch', lambda v: [v, v, run_params['mz_trap_size'], run_params['mz_trap_size']]),
+                    'gate_density': lambda v: v,
+                    'enable_memory_zone_manager': lambda v: v,
+                    'pz_numbers_to_use': lambda v: v,
+                    'optimize_params': lambda v: v,
+                    'algorithm_name': lambda v: v,
+                    'gate_time_one_qubit': lambda v: v,
+                    'gate_time_two_qubit': lambda v: v
                 }
-                algo_params['num_pzs'] = run_params['num_pzs']
-                algo_params['capacity'] = run_params['ions_per_pz']
                 
-                config["gate_partition_algorithm"] = {
-                    "name": run_params['partitioning_algorithm'],
-                    "params": algo_params
-                }
-            
-            print(f"\n=== Run {result_index + skipped - existing_runs + 1} / {total_combinations} new ===")
-            print(f"Config: {run_params}")
-            
-            run_name = f'run_{result_index:04d}'
-            run_group = results_group.create_group(run_name)
+                # Apply direct parameter mappings
+                for param_key, param_value in run_params_for_file.items():
+                    if param_key in param_mapping:
+                        mapping = param_mapping[param_key]
+                        if isinstance(mapping, tuple):
+                            config_key, transform = mapping
+                            config[config_key] = transform(param_value)
+                        else:
+                            config[param_key] = mapping(param_value)
 
-            # Store all run parameters as attributes
-            for key, value in run_params.items():
-                if value == None:
-                    value = 'None'
-                run_group.attrs[key] = value
-            
-            try:
-                (
-                    final_timesteps,
-                    cpu_time,
-                    timesteps_lower_bound,
-                    cost_before,
-                    cost_after,
-                    time_slices_info,
-                    qubit_assignments,
-                    move_distance_total,
-                    partition_param_trials,
-                ) = execute_run(config)
+                if qasm_file is not None:
+                    config["qasm_file_path"] = str(qasm_file)
+                    if inferred_num_ions is not None:
+                        config["num_ions"] = int(inferred_num_ions)
+                else:
+                    config.pop("qasm_file_path", None)
+                
+                # Handle partitioning algorithm
+                if run_params_for_file['partitioning_algorithm'] == 'none':
+                    config.pop("gate_partition_algorithm", None)
+                else:
+                    # Extract algorithm parameters from run_params
+                    algo_params = {
+                        key.replace('algo_', ''): value 
+                        for key, value in run_params_for_file.items() 
+                        if key.startswith('algo_')
+                    }
+                    algo_params['num_pzs'] = run_params_for_file['num_pzs']
+                    algo_params['capacity'] = run_params_for_file['ions_per_pz']
+                    
+                    config["gate_partition_algorithm"] = {
+                        "name": run_params_for_file['partitioning_algorithm'],
+                        "params": algo_params
+                    }
+                
+                print(f"\n=== Run {result_index + skipped - existing_runs + 1} / {total_combinations} new ===")
+                print(f"Config: {run_params_for_file}")
+                
+                run_name = f'run_{result_index:04d}'
+                run_group = results_group.create_group(run_name)
 
-                print("move_distance_total:", move_distance_total)
+                # Store all run parameters as attributes
+                for key, value in run_params_for_file.items():
+                    if value == None:
+                        value = 'None'
+                    run_group.attrs[key] = value
+                if "algorithm_name" not in run_params_for_file and config.get("algorithm_name") is not None:
+                    run_group.attrs["algorithm_name"] = config["algorithm_name"]
+                
+                try:
+                    (
+                        final_timesteps,
+                        cpu_time,
+                        timesteps_lower_bound,
+                        cost_before,
+                        cost_after,
+                        time_slices_info,
+                        qubit_assignments,
+                        move_distance_total,
+                        partition_param_trials,
+                    ) = execute_run(config)
 
-                if final_timesteps >= config.get("max_timesteps", 100000) - 1:
+                    print("move_distance_total:", move_distance_total)
+
+                    if final_timesteps >= config.get("max_timesteps", 100000) - 1:
+                        run_group.attrs['success'] = False
+                        run_group.attrs['error_message'] = (
+                            f"Simulation reached max timesteps ({final_timesteps})"
+                        )
+                    else:
+                        run_group.attrs['success'] = True
+                        run_group.attrs['final_timesteps'] = final_timesteps
+                    run_group.attrs['cpu_time_seconds'] = cpu_time.total_seconds()
+                    run_group.attrs['timesteps_lower_bound'] = timesteps_lower_bound
+                    run_group.attrs['cost_before'] = cost_before if cost_before is not None else np.nan
+                    run_group.attrs['cost_after'] = cost_after if cost_after is not None else np.nan
+                    if time_slices_info:
+                        _write_json_dataset(run_group, "time_slices", time_slices_info)
+                    if qubit_assignments:
+                        _write_json_dataset(run_group, "qubit_assignments", qubit_assignments)
+                    run_group.attrs["move_distance_total"] = (
+                        float(move_distance_total) if move_distance_total is not None else np.nan
+                    )
+                    if partition_param_trials:
+                        _write_json_dataset(run_group, "partition_param_trials", partition_param_trials)
+                    if move_distance_total is not None:
+                        move_dist_records.append(float(move_distance_total))
+
+                    if run_group.attrs['success']:
+                        print(f" - Successful!, {cpu_time.total_seconds():.2f}s CPU time")
+                        if best_timesteps is None or final_timesteps < best_timesteps:
+                            best_timesteps = final_timesteps
+                            best_params = run_params_for_file.copy()
+                    else:
+                        print(f" - FAILED. {cpu_time.total_seconds():.2f}s CPU time")
+
+                except KeyboardInterrupt:
+                    print("Meta study interrupted by user. Current configuration will be retried on the next run.")
+                    # Remove the partially created group so the run can resume later
+                    del results_group[run_name]
+                    raise
+                except Exception as e:
+                    print(f"Failed: {str(e)}")
+                    
+                    run_group.attrs['error_message'] = str(e)
                     run_group.attrs['success'] = False
-                    run_group.attrs['error_message'] = f"Simulation reached max timesteps ({final_timesteps})"
-                else:
-                    run_group.attrs['success'] = True
-                    run_group.attrs['final_timesteps'] = final_timesteps
-                run_group.attrs['cpu_time_seconds'] = cpu_time.total_seconds()
-                run_group.attrs['timesteps_lower_bound'] = timesteps_lower_bound
-                run_group.attrs['cost_before'] = cost_before if cost_before is not None else np.nan
-                run_group.attrs['cost_after'] = cost_after if cost_after is not None else np.nan
-                if time_slices_info:
-                    _write_json_dataset(run_group, "time_slices", time_slices_info)
-                if qubit_assignments:
-                    _write_json_dataset(run_group, "qubit_assignments", qubit_assignments)
-                run_group.attrs["move_distance_total"] = (
-                    float(move_distance_total) if move_distance_total is not None else np.nan
-                )
-                if partition_param_trials:
-                    _write_json_dataset(run_group, "partition_param_trials", partition_param_trials)
-                if move_distance_total is not None:
-                    move_dist_records.append(float(move_distance_total))
                 
-                
-                if run_group.attrs['success']:
-                    print(f" - Successful!, {cpu_time.total_seconds():.2f}s CPU time")
-                    if best_timesteps is None or final_timesteps < best_timesteps:
-                        best_timesteps = final_timesteps
-                        best_params = run_params.copy()
-                else:
-                    print(f" - FAILED. {cpu_time.total_seconds():.2f}s CPU time")
-                
-            except KeyboardInterrupt:
-                print("Meta study interrupted by user. Current configuration will be retried on the next run.")
-                # Remove the partially created group so the run can resume later
-                del results_group[run_name]
-                raise
-            except Exception as e:
-                print(f"Failed: {str(e)}")
-                
-                run_group.attrs['error_message'] = str(e)
-                run_group.attrs['success'] = False
-            
-            result_index += 1
+                result_index += 1
     
     print(f"\nAll simulations completed. Skipped {skipped} existing parameter sets.")
     print(f"Results saved to {results_file}")

@@ -6,6 +6,7 @@ import networkx as nx
 from networkx.algorithms.community import kernighan_lin_bisection
 from qiskit import QuantumCircuit
 from qiskit.transpiler.passes import RemoveBarriers, RemoveFinalMeasurements
+from qiskit.qasm3 import loads as parse_qasm3
 from .compilation import rename_all_qregs_in_qasm
 
 
@@ -17,7 +18,10 @@ def parse_qasm_to_qiskit(file_path: Path) -> QuantumCircuit:
     except Exception as e:
         print(f"Error updating QASM string: {e}.")
         print(f"parsing original.")
-    circuit = QuantumCircuit.from_qasm_str(qasm_str)
+    try:
+        circuit = QuantumCircuit.from_qasm_str(qasm_str)
+    except:
+        circuit = parse_qasm3(qasm_str)
     ## Remove barriers
     circuit = RemoveBarriers()(circuit)
     # Remove measurement operations

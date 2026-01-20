@@ -21,7 +21,7 @@ try:
 except Exception:
     plt = None
 
-PRINT_DEBUG = 0
+DEBUG_FLAG = 0
 
 from outside.compilation import (
     build_node_gate_id_lookup,
@@ -106,6 +106,8 @@ def _calculate_timestep_lower_bound(graph, slice_plan: list[list[int]] | None = 
 
 
 def _infer_num_ions_from_qasm(qasm_file_path: pathlib.Path) -> int:
+    if True: #DEBUG_FLAG:
+        print("parsing", qasm_file_path, "...")
     qc = parse_qasm_to_qiskit(qasm_file_path)
     return qc.num_qubits
 
@@ -206,7 +208,7 @@ def main(config: dict[str, Any]):
         print(f"Error: num_pzs ({num_pzs_config}) is invalid or results in no PZs selected.")
         sys.exit(1)
 
-    if PRINT_DEBUG:
+    if DEBUG_FLAG:
         print(f"Using {len(pzs_to_use)} PZs: {[pz.name for pz in pzs_to_use]} with max {max_ions_per_pz} ions each")
         print(f"Architecture: {arch}, Seed: {seed}")
         print(f"Algorithm: {algorithm_name}, ions: {num_ions}")
@@ -285,7 +287,7 @@ def main(config: dict[str, Any]):
     seq_length = len(graph.sequence)
     partition_result: object | None = None
     
-    if PRINT_DEBUG:
+    if DEBUG_FLAG:
         print(f"Number of ions: {num_ions}")
         print(f"Number of Gates: {seq_length}")
 
@@ -300,12 +302,11 @@ def main(config: dict[str, Any]):
             # Simple fix: assign remaining qubits to the last partition, or distribute evenly.
             # This might need a more sophisticated balancing strategy.
             if len(part) < len(graph.pzs):
-                print("Error: Partitioning failed to produce enough parts.")
+                print("Partitioning failed to produce enough parts. Padding with empty partitions.")
+                part.extend([[]] * (len(graph.pzs) - len(part)))
                 # Handle error appropriately, maybe fall back to non-partitioned approach or exit.
-                sys.exit(1)
-            else:  # More parts than PZs, merge extra parts into the last ones
-                merged = [qubit for sublist in part[len(graph.pzs) - 1 :] for qubit in sublist]
-                part = [*part[: len(graph.pzs) - 1], merged]
+            merged = [qubit for sublist in part[len(graph.pzs) - 1 :] for qubit in sublist]
+            part = [*part[: len(graph.pzs) - 1], merged]
 
         partitions = {pz.name: part[i] for i, pz in enumerate(graph.pzs)}
         #print(f"Partitions: {partitions}")
@@ -365,7 +366,7 @@ def main(config: dict[str, Any]):
             graph.gate_info = initial_circuit.gate_info
             graph.dag_gate_id_lookup = {}
     else:
-        if PRINT_DEBUG:
+        if DEBUG_FLAG:
             print("DAG disabled, using static QASM sequence.")
         graph.dag_gate_id_lookup = {}
 
@@ -526,7 +527,10 @@ def main(config: dict[str, Any]):
     graph.current_gate_by_pz = {}
 
     timesteps_lower_bound = _calculate_timestep_lower_bound(graph, slice_plan=None)#graph.slice_plan)
-    print("Lower bound on timesteps:", timesteps_lower_bound)
+    
+    print("\n-------- \nCircuit:", qasm_file_path)
+
+    print("\nLower bound on timesteps:", timesteps_lower_bound)
 
     #if gate_assignment:
     #    print("Gate assignment to PZs:")
@@ -542,8 +546,7 @@ def main(config: dict[str, Any]):
     # Initialize PZ states
     for pz in graph.pzs:
         pz.getting_processed = []  # Track nodes being processed by this PZ
-
-    print("\nStarted shuttling simulation...")
+    print("Started shuttling simulation...")
 
     # Run the main shuttling logic
     shuttle_kwargs = {}
@@ -638,7 +641,9 @@ def predictor_test_function(config: dict[str, Any]) -> None:
         raise ValueError(msg)
 
     n_circuits = config.get("n_circuits")
+    min_qubits = config.get("min_qubits", 5)
     max_qubits = config.get("max_qubits", 15)
+    max_qasm_lines = config.get("max_qasm_lines")
     target_qubits = config.get("num_ions")
 
     qasm_files = sorted(qasm_dir.glob("*.qasm"))
@@ -684,11 +689,21 @@ def predictor_test_function(config: dict[str, Any]) -> None:
         else:
             results_group = f["results"]
 
+        existing_circuit_names = {
+            str(run_group.attrs.get("circuit_name"))
+            for run_group in results_group.values()
+            if run_group.attrs.get("circuit_name") is not None
+        }
         result_index = len(list(results_group.keys()))
         skipped = 0
 
         for qasm_file in qasm_files:
             circuit_name = qasm_file.stem
+            if circuit_name in existing_circuit_names:
+                skipped += 1
+                print("")
+                print(f"Skipping existing circuit: {circuit_name}. Total skipped: {skipped}")
+                continue
             try:
                 num_ions = _infer_num_ions_from_qasm(qasm_file)
             except Exception as exc:
@@ -696,8 +711,8 @@ def predictor_test_function(config: dict[str, Any]) -> None:
                 skipped += 1
                 continue
 
-            if max_qubits is not None and num_ions > max_qubits:
-                print(f"Skipping {qasm_file}: num_ions={num_ions} exceeds max_qubits={max_qubits}")
+            if (max_qubits is not None and num_ions > max_qubits) or (min_qubits is not None and num_ions < min_qubits):
+                print(f"Skipping {qasm_file}: num_ions={num_ions} but max_qubits={max_qubits} and min_qubits={min_qubits}")
                 skipped += 1
                 continue
 
@@ -705,6 +720,30 @@ def predictor_test_function(config: dict[str, Any]) -> None:
                 print(f"Skipping {qasm_file}: num_ions={num_ions} != target {target_qubits}")
                 skipped += 1
                 continue
+            try:
+                qasm_size_bytes = qasm_file.stat().st_size
+            except Exception as exc:
+                print(f"Skipping {qasm_file}: could not stat file size ({exc})")
+                skipped += 1
+                continue
+            if qasm_size_bytes > 100 * 1024:
+                print(f"Skipping {qasm_file}: size_bytes={qasm_size_bytes} exceeds 100kB")
+                skipped += 1
+                continue
+            if max_qasm_lines is not None:
+                try:
+                    with qasm_file.open("r", encoding="utf-8", errors="ignore") as handle:
+                        line_count = sum(1 for _ in handle)
+                except Exception as exc:
+                    print(f"Skipping {qasm_file}: could not count lines ({exc})")
+                    skipped += 1
+                    continue
+                if line_count > max_qasm_lines:
+                    print(
+                        f"Skipping {qasm_file}: line_count={line_count} exceeds max_qasm_lines={max_qasm_lines}"
+                    )
+                    skipped += 1
+                    continue
             try:
                 parsed_circuit = create_initial_sequence(qasm_file)
                 gate_count = len(parsed_circuit.sequence)
@@ -728,9 +767,9 @@ def predictor_test_function(config: dict[str, Any]) -> None:
                 "gate_time_two_qubit": run_config.get("gate_time_two_qubit", "None"),
             }
             if _parameter_set_exists(results_group, run_params):
-                print("")
-                print(f"Skipping existing parameter set: {run_params}")
                 skipped += 1
+                print("")
+                print(f"Skipping existing parameter set: {run_params}. Total skipped: {skipped}")
                 continue
 
             run_name = f"run_{result_index:04d}"
@@ -774,6 +813,7 @@ def predictor_test_function(config: dict[str, Any]) -> None:
                 if partition_param_trials:
                     _write_json_dataset(run_group, "partition_param_trials", partition_param_trials)
                 result_index += 1
+                existing_circuit_names.add(circuit_name)
             except KeyboardInterrupt:
                 print("Interrupted by user. Current configuration will be retried on the next run.")
                 del results_group[run_name]
@@ -1104,6 +1144,8 @@ if __name__ == "__main__":
             # Store all run parameters as attributes
             for key, value in run_params.items():
                 run_group.attrs[key] = value
+            if "algorithm_name" not in run_params and config.get("algorithm_name") is not None:
+                run_group.attrs["algorithm_name"] = config["algorithm_name"]
             
             try:
                 (
