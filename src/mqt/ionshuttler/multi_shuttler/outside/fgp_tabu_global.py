@@ -64,6 +64,7 @@ def fgp_tabu_global(
     distance_weight_factor: float = 1.0,
     slack_dropoff: float | None = None,
     max_iterations: int | None = None,
+    max_iterations_factor: float | None = None,
     tabu_list_length: int | None = None,
     candidate_list_length: int | None = None,
     per_slice_quota: int | None = None,
@@ -85,6 +86,7 @@ def fgp_tabu_global(
         print(f"distance_weight_factor: {distance_weight_factor}")
         print(f"slack_dropoff: {slack_dropoff}")
         print(f"max_iterations: {max_iterations}")
+        print(f"max_iterations_factor: {max_iterations_factor}")
         print(f"tabu_list_length: {tabu_list_length}")
         print(f"candidate_list_length: {candidate_list_length}")
         print(f"per_slice_quota: {per_slice_quota}")
@@ -110,10 +112,12 @@ def fgp_tabu_global(
     pz_names = [pz.name for pz in graph.pzs]
     pz_positions: Sequence[ProcessingZone | None] = [graph.pzs_name_map.get(name) for name in pz_names]
     pz_distance_map = _build_pz_distance_map(graph, pz_positions, graph_based_distance=graph_based_distance)
+    if max_iterations is None and max_iterations_factor is not None:
+        max_iterations = int(max_iterations_factor * num_qubits)
     if not max_iterations or max_iterations <= 0:
         max_iterations = 100
     if not tabu_list_length or tabu_list_length <= 0:
-        tabu_list_length = 20
+        tabu_list_length = max(1, int(round(0.1 * max_iterations)))
     
 
     start_time = time.perf_counter()
@@ -156,7 +160,8 @@ def fgp_tabu_global(
     if DEBUG_FLAG:
         print("Overview:")
         for idx, slice in enumerate(partition_output["peeled_subslices"]):
-            print(f"Slice {idx+1}:", partition_output["qubit_assignments"][idx])
+            print(f"Slice {idx+1}:", partition_output["qubit_assignments"][idx], "; Gates:", [[(gid, gate_info[gid].qubits) for gid in partition_output["time_slices"][idx] if gid in set(gates)] for gates in partition_output["gate_partition_by_pz"].values()])
+
             for subslice in slice[:1]:
                 all_qubits = []
                 for partition in subslice["partitions"]:

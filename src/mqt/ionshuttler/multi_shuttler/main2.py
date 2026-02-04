@@ -32,7 +32,8 @@ from outside.compilation import (
 )
 from outside.cycles import create_starting_config, get_ions
 from outside.graph_creator import GraphCreator, PZCreator
-from outside.partition import get_partition
+from outside.partition import 
+
 from outside.processing_zone import ProcessingZone
 from outside.shuttle import main as run_shuttle_main
 from outside.partition import parse_qasm_to_qiskit
@@ -112,6 +113,20 @@ def _infer_num_ions_from_qasm(qasm_file_path: pathlib.Path) -> int:
     return qc.num_qubits
 
 
+def _resolve_max_timesteps(config: dict[str, Any], num_ions: int | None) -> int:
+    max_timesteps = config.get("max_timesteps")
+    if max_timesteps is None:
+        max_timesteps_factor = config.get("max_timesteps_factor")
+        if max_timesteps_factor is not None:
+            if num_ions is None:
+                msg = "Config parameter 'num_ions' is required when using 'max_timesteps_factor'."
+                raise ValueError(msg)
+            max_timesteps = int(max_timesteps_factor * num_ions)
+        else:
+            max_timesteps = 100000
+    return int(max_timesteps)
+
+
 def run_legacy_cli_with_config(config: dict[str, Any]) -> tuple[int, timedelta]:
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp_file:
         json.dump(config, tmp_file)
@@ -154,7 +169,7 @@ def main(config: dict[str, Any]):
     num_ions = config.get("num_ions")
     use_dag = config.get("use_dag", True) and not config.get("enforce_slice_plan", False)
     use_paths = config.get("use_paths", False)
-    max_timesteps = config.get("max_timesteps", 100000)
+    max_timesteps = config.get("max_timesteps")
     plot_flag = config.get("plot", False)
     save_flag = config.get("save", False)
     failing_junctions = config.get("failing_junctions", 0)
@@ -270,6 +285,8 @@ def main(config: dict[str, Any]):
     if not qasm_file_path.is_file():
         print(f"Error: QASM file not found at {qasm_file_path}")
         sys.exit(1)
+
+    max_timesteps = _resolve_max_timesteps(config, num_ions)
 
     # --- Initial State & Sequence ---
     create_starting_config(graph, num_ions, seed=seed)
@@ -658,6 +675,12 @@ def execute_run(
     float | None,
 ]:
     config_for_run = config.copy()
+    if config_for_run.get("max_timesteps") is None and config_for_run.get("max_timesteps_factor") is not None:
+        num_ions = config_for_run.get("num_ions")
+        if num_ions is None and config_for_run.get("qasm_file_path") is not None:
+            num_ions = _infer_num_ions_from_qasm(pathlib.Path(config_for_run["qasm_file_path"]))
+            config_for_run["num_ions"] = num_ions
+        config_for_run["max_timesteps"] = _resolve_max_timesteps(config_for_run, num_ions)
     if should_use_legacy_cli(config_for_run):
         print("Using legacy CLI entrypoint (mqt-ionshuttler-heuristic) for this configuration.")
         final_ts, cpu_time = run_legacy_cli_with_config(config_for_run)
@@ -776,7 +799,7 @@ if __name__ == "__main__":
     #unique_id = "generated_0.71_0.7_num_ions_4pzs"
     #unique_id = "balance_distance_sweep_20ions_4pzs"
     #unique_id = "num_pzs_mean_std_allswept_4pzs"
-    unique_id = "fgp_tabu_global_feature_test_4pzs_3perpz_NODAG_2"
+    unique_id = "fgp_tabu_global_benchmark_2pzs_6perpz_WITHDAG"
 
     # Declare partitioning algorithm parameters
     fgp_tabu = {
@@ -797,9 +820,9 @@ if __name__ == "__main__":
         'params': {
             'balance_penalty': [5], #np.linspace(0.1, 5, 40),  #[0.6],
             'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
-            'max_iterations':   [1000], #list(range(0, 500+1, 100)),
-            'tabu_list_length': [200],
-            'seed': range(5),
+            'max_iterations_factor': [100], #list(range(0, 500+1, 100)),
+            #'tabu_list_length': [200],
+            'seed': range(1),
             'candidate_list_length': [None],
         },
         '_sampling': {
@@ -814,7 +837,7 @@ if __name__ == "__main__":
             'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
             'max_iterations':   [2500], #list(range(0, 500+1, 100)),
             'tabu_list_length': [200],
-            'seed': range(5),
+            'seed': range(3),
             'candidate_list_length': [300],
         },
     }
@@ -825,7 +848,7 @@ if __name__ == "__main__":
             'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
             'max_iterations':   [2500], #list(range(0, 500+1, 100)),
             'tabu_list_length': [200],
-            'seed': range(5),
+            'seed': range(3),
             'candidate_list_length': [200],
             'per_slice_quota': [1],
         },
@@ -837,7 +860,7 @@ if __name__ == "__main__":
             'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
             'max_iterations':   [1000], #list(range(0, 500+1, 100)),
             'tabu_list_length': [200],
-            'seed': range(5),
+            'seed': range(3),
             'slack_dropoff' : [1],
         },
     }
@@ -859,13 +882,13 @@ if __name__ == "__main__":
         "algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2", "qaoa_nativegates_quantinuum_opt2", "qpeexact_nativegates_quantinuum_qiskit_opt2", "random_nativegates_quantinuum_qiskit_opt2"],
         #"algorithm_name": ["random_nativegates_quantinuum_qiskit_opt2"],
         # Core architecture parameters
-        'num_ions': [15,20,30],
-        'num_pzs': [4],
-        'ions_per_pz': [3],
+        'num_ions': [20,30,40,50],
+        'num_pzs': [2],
+        'ions_per_pz': [6],
         'grid_size': [4],
-        'mz_trap_size': [1],
+        'mz_trap_size': [3],
         #'pz_numbers_to_use': [[1,9,6,3,11,8]], 
-        'use_dag': [False],
+        'use_dag': [True],
         'enforce_slice_plan': [False],
         'enable_memory_zone_manager': [False],
         'save' : [False],
@@ -881,8 +904,8 @@ if __name__ == "__main__":
             #fgp_tabu,
             fgp_tabu_global,
             #fgp_tabu_global_mini,
-            fgp_tabu_global_mini_quota,
-            fgp_tabu_global_slack
+            #fgp_tabu_global_mini_quota,
+            #fgp_tabu_global_slack
             #fgp_kl,
             #fgp_roee,
             #rehome
@@ -1136,7 +1159,8 @@ if __name__ == "__main__":
 
                     print("move_distance_total:", move_distance_total)
 
-                    if final_timesteps >= config.get("max_timesteps", 100000) - 1:
+                    max_timesteps = _resolve_max_timesteps(config, config.get("num_ions"))
+                    if final_timesteps >= max_timesteps - 1:
                         run_group.attrs['success'] = False
                         run_group.attrs['error_message'] = (
                             f"Simulation reached max timesteps ({final_timesteps})"
