@@ -45,6 +45,7 @@ class GraphCreator:
         #     self._remove_mid_part(networkx_graph)
         self._remove_junctions(networkx_graph, self.failing_junctions)
         nx.set_edge_attributes(networkx_graph, values=dict.fromkeys(networkx_graph.edges(), "trap"), name="edge_type")
+        self._set_processing_zone_edges(networkx_graph)
         nx.set_node_attributes(networkx_graph, values=dict.fromkeys(networkx_graph.nodes(), 1), name="weight")
 
         return networkx_graph
@@ -103,6 +104,13 @@ class GraphCreator:
         # Remove the specified number of nodes
         for node in nodes_to_remove[:num_nodes_to_remove]:
             networkx_graph.remove_node(node)
+
+    def _set_processing_zone_edges(self, networkx_graph: Graph) -> None:
+        for pz in self.pz_info:
+            edge = tuple(sorted(pz.edge_idc, key=sum))
+            if networkx_graph.has_edge(*edge):
+                networkx_graph.edges[edge]["edge_type"] = "processing"
+                networkx_graph.edges[edge]["color"] = "g"
 
     def get_graph(self) -> Graph:
         return self.networkx_graph

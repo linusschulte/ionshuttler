@@ -95,7 +95,7 @@ def have_common_junction_node(graph: Graph, edge1: Edge, edge2: Edge) -> bool:
 
 def check_if_edge_is_filled(graph: Graph, edge_idc: Edge) -> bool:
     chain = graph.edges()[edge_idc]["ions"]
-    if len(chain) > 1:
+    if len(chain) > 1 and  graph.edges()[edge_idc]["edge_type"] == "trap":
         # raise ValueError(f"Edge {edge_idc} has more than one ion entry: {chain}")
         print(f"{edge_idc} has more than one ion: {chain} (while check if edge filled)")
     return len(chain) > 0  # == 1

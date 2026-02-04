@@ -30,10 +30,7 @@ def plot_state(
 
     idc_dict = graph.idc_dict
     pos = {(x, y): (y, -x) for i, (x, y) in enumerate(list(graph.nodes()))}
-    if plot_ions is True:
-        pass
-        # edge_labels = nx.get_edge_attributes(graph,'ions')
-    else:
+    if plot_ions is False:
         edge_labels = {}
         for idc in graph.edges():
             edge_labels[idc] = f"$e_{{{get_idx_from_idc(idc_dict, idc)}}}$"
@@ -82,11 +79,21 @@ def plot_state(
 
     edge_color = nx.get_edge_attributes(graph, "color").values()
     node_color = list(nx.get_node_attributes(graph, "color").values())
-    edge_labels = nx.get_edge_attributes(graph, "ions")
+    pz_edge_to_name = {tuple(sorted(pz.edge_idc, key=sum)): pz.name for pz in graph.pzs}
+    edge_labels = {}
+    edge_types = nx.get_edge_attributes(graph, "edge_type")
+    for edge in graph.edges:
+        ions = graph.edges[edge].get("ions", [])
+        edge_type = edge_types.get(edge, "trap")
+        normalized = tuple(sorted(edge, key=sum))
+        if normalized in pz_edge_to_name:
+            edge_labels[edge] = f"{ions} ({pz_edge_to_name[normalized]})"
+        else:
+            edge_labels[edge] = f"{ions}"# ({edge_type[:4]})"
     # node_size = list(nx.get_node_attributes(graph, "node_size").values())
 
     plt.figure(figsize=(max(pos.keys())[1] * 2, max(pos.keys())[0] * 2))
-    print(graph.nodes())
+    #print(graph.nodes())
     nx.draw_networkx(
         graph,
         pos=pos,
