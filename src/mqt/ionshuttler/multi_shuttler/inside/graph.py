@@ -47,6 +47,14 @@ class Graph(nx.Graph):  # type: ignore [type-arg]
         self._state = value
 
     @property
+    def max_ions_per_pz(self) -> int:
+        return self._max_ions_per_pz
+
+    @max_ions_per_pz.setter
+    def max_ions_per_pz(self, value: int) -> None:
+        self._max_ions_per_pz = value
+
+    @property
     def in_process(self) -> list[int]:
         return self._in_process
 

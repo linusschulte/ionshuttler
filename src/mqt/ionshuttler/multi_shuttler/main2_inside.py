@@ -23,8 +23,6 @@ except Exception:
 
 PRINT_DEBUG = 0
 
-from make_timeline_dev import FrameCollector
-
 from inside.cycles import create_starting_config, get_ion_chains
 from inside.graph_creator import GraphCreator
 from inside.helper import generate_pzs
@@ -97,8 +95,33 @@ def _resolve_max_timesteps(config: dict[str, Any], num_ions: int | None) -> int:
     return int(max_timesteps)
 
 
+def _format_site(site: tuple[int, int]) -> str:
+    return f"({site[0]}, {site[1]})"
+
+
 def _edge_to_strings(edge: tuple[tuple[int, int], tuple[int, int]]) -> list[str]:
-    return [f"({edge[0][0]},{edge[0][1]})", f"({edge[1][0]},{edge[1][1]})"]
+    return [_format_site(edge[0]), _format_site(edge[1])]
+
+
+def _collect_ion_edges(graph: Any) -> dict[int, tuple[tuple[int, int], tuple[int, int]]]:
+    ion_edges: dict[int, tuple[tuple[int, int], tuple[int, int]]] = {}
+    for u, v, data in graph.edges(data=True):
+        ions = data.get("ions", [])
+        edge = tuple(sorted((u, v), key=sum))
+        for ion in ions:
+            ion_edges[int(ion)] = edge
+    return ion_edges
+
+
+def _removed_gates(prev: list[tuple[int, ...]], current: list[tuple[int, ...]]) -> list[tuple[int, ...]]:
+    remaining = list(current)
+    removed: list[tuple[int, ...]] = []
+    for gate in prev:
+        if gate in remaining:
+            remaining.remove(gate)
+        else:
+            removed.append(gate)
+    return removed
 
 
 def run_legacy_cli_with_config(config: dict[str, Any]) -> tuple[int, timedelta]:
@@ -227,7 +250,7 @@ def main(config: dict[str, Any]):
         graph.edges[normalized]["color"] = "g"
 
     graph.seed = seed
-    graph.max_num_parking = max_ions_per_pz
+    graph.max_ions_per_pz = max_ions_per_pz
     graph.pzs = pzs_to_use
     graph.plot = plot_flag
     graph.save = save_flag
@@ -431,18 +454,47 @@ def main(config: dict[str, Any]):
 
     graph.gate_pz_assignment = gate_assignment
 
-    collector = None
+    timeline_frames: list[dict[str, object]] = []
     if timeline_output:
-        collector = FrameCollector()
-
         def _patched_plot_state(g, *args, **kwargs):
-            try:
-                return collector.capture(g, *args, **kwargs)
-            except Exception:
-                g.state = get_ion_chains(g)
-                frame = {"state": {str(k): _edge_to_strings(v) for k, v in g.state.items()}}
-                collector.frames.append(frame)
+            labels = kwargs.get("labels", args[0] if args else ("", None))
+            timestep_label = labels[0] if isinstance(labels, tuple) and labels else ""
+            match = re.search(r"timestep\s+(\d+)", str(timestep_label))
+            if not match:
                 return None
+            timestep = int(match.group(1))
+
+            ion_edges = _collect_ion_edges(g)
+            ions_payload = [
+                {"id": f"$q_{ion}$", "edge": _edge_to_strings(edge)}
+                for ion, edge in sorted(ion_edges.items())
+            ]
+
+            buffered = list(getattr(g, "executed_gates_next", []))
+            if buffered and timeline_frames:
+                converted = []
+                for gate in buffered:
+                    edge = gate.get("edge", [])
+                    edge_str = _edge_to_strings(tuple(edge)) if len(edge) == 2 else []
+                    qubits = gate.get("qubits", [])
+                    qubits = [f"$q_{q}$" for q in qubits]
+                    converted.append(
+                        {
+                            "id": gate.get("id"),
+                            "type": gate.get("type"),
+                            "qubits": qubits,
+                            "edge": edge_str,
+                            "duration": gate.get("duration", 1),
+                            "pz": gate.get("pz", ""),
+                        }
+                    )
+                timeline_frames[-1].setdefault("gates", [])
+                timeline_frames[-1]["gates"].extend(converted)
+                g.executed_gates_next = []
+
+            frame: dict[str, object] = {"t": timestep, "ions": ions_payload}
+            timeline_frames.append(frame)
+            return None
 
         plotting_mod.plot_state = _patched_plot_state
         shuttle_mod.plot_state = _patched_plot_state
@@ -459,19 +511,27 @@ def main(config: dict[str, Any]):
         #gate_time_two_qubit=gate_time_two_qubit,
     )
     cpu_time = datetime.now() - start_time
-    if collector and timeline_output:
+    if timeline_output:
+        pzs_payload = {pz.name: _edge_to_strings(pz.edge_idc) for pz in graph.pzs}
+        inner_pz_edges = [_edge_to_strings(pz.edge_idc) for pz in graph.pzs]
+        architecture = {
+            "grid": {"rows": m, "cols": n},
+            "sites": {"vertical": v, "horizontal": h},
+            "pzs": pzs_payload,
+            "innerPZEdges": inner_pz_edges,
+        }
         payload = {
-            "architecture": {
-                "grid": {"rows": m, "cols": n},
-                "sites": {"vertical": v, "horizontal": h},
-                "innerPZEdges": [_edge_to_strings(pz.edge_idc) for pz in graph.pzs],
-            },
-            "timeline": collector.frames,
+            "architecture": architecture,
+            "grid": architecture["grid"],
+            "sites": architecture["sites"],
+            "pzs": architecture["pzs"],
+            "innerPZEdges": architecture["innerPZEdges"],
+            "timeline": timeline_frames,
         }
         out_path = pathlib.Path(timeline_output + "_inside.json") # + "_" + algorithm_name + "_" + algo + ".json")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(payload, separators=(",", ":")))
-        print(f"Wrote timeline JSON to {out_path} ({len(collector.frames)} frames).")
+        print(f"Wrote timeline JSON to {out_path} ({len(timeline_frames)} frames).")
 
     cost_before = getattr(partition_result, "cost_before", None)
     cost_after = getattr(partition_result, "cost_after", None)

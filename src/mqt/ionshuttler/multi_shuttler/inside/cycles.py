@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import random
 from typing import TYPE_CHECKING
 
@@ -7,6 +8,8 @@ import networkx as nx
 from more_itertools import pairwise
 
 from .graph_utils import get_idx_from_idc
+
+DEBUG_FLAG = bool(int(os.getenv("IONSHUTTLER_DEBUG_CYCLES", "0")))
 
 if TYPE_CHECKING:
     from .graph import Graph
@@ -48,7 +51,7 @@ def get_ion_chains(graph: Graph) -> dict[int, Edge]:
             # make indices of edge consistent
             edge_idc = tuple(sorted((u, v), key=sum))
 
-            if len(data["ions"]) > 2:
+            if len(data["ions"]) > 2 and data["edge_type"] != "processing":
                 msg = f"Edge ({u}, {v}) has more than two ions: {data['ions']}"
                 raise ValueError(msg)
             for chain in chains:
@@ -95,9 +98,10 @@ def have_common_junction_node(graph: Graph, edge1: Edge, edge2: Edge) -> bool:
 
 def check_if_edge_is_filled(graph: Graph, edge_idc: Edge) -> bool:
     chain = graph.edges()[edge_idc]["ions"]
-    if len(chain) > 1 and  graph.edges()[edge_idc]["edge_type"] == "trap":
+    if len(chain) > 1 and graph.edges()[edge_idc]["edge_type"] == "trap":
         # raise ValueError(f"Edge {edge_idc} has more than one ion entry: {chain}")
-        print(f"{edge_idc} has more than one ion: {chain} (while check if edge filled)")
+        if DEBUG_FLAG:
+            print(f"{edge_idc} has more than one ion: {chain} (while check if edge filled)")
     return len(chain) > 0  # == 1
 
 

@@ -40,14 +40,53 @@ def _boundary_edge_candidates(m: int, n: int, v: int, h: int) -> list[Edge]:
     return dedup
 
 
+def _round_robin_edges_by_line(lines: dict[int, list[Edge]]) -> list[Edge]:
+    """Take one edge per line in rounds to keep per-line counts balanced."""
+    line_ids = sorted(lines)
+    queue = {line_id: list(edges) for line_id, edges in lines.items()}
+    selected: list[Edge] = []
+    while any(queue[line_id] for line_id in line_ids):
+        for line_id in line_ids:
+            if queue[line_id]:
+                selected.append(queue[line_id].pop(0))
+    return selected
+
+
+def _even_then_odd(edges: list[Edge]) -> list[Edge]:
+    return [*edges[::2], *edges[1::2]]
+
+
+def _all_line_balanced_candidates(m: int, n: int, v: int, h: int) -> list[Edge]:
+    """Horizontals first (balanced per row), then verticals (balanced per column)."""
+    max_row = (m - 1) * v
+    max_col = (n - 1) * h
+
+    horizontal_lines: dict[int, list[Edge]] = {}
+    for row in range(0, max_row + 1, v):
+        row_edges = [((row, col), (row, col + h)) for col in range(0, max_col, h)]
+        horizontal_lines[row] = _even_then_odd(row_edges)
+
+    vertical_lines: dict[int, list[Edge]] = {}
+    for col in range(0, max_col + 1, h):
+        col_edges = [((row, col), (row + v, col)) for row in range(0, max_row, v)]
+        vertical_lines[col] = _even_then_odd(col_edges)
+
+    horizontals = _round_robin_edges_by_line(horizontal_lines)
+    verticals = _round_robin_edges_by_line(vertical_lines)
+    return [*horizontals, *verticals]
+
+
 def generate_pzs(num_pzs: int, m: int, n: int, v: int, h: int) -> dict[str, ProcessingZone]:
     if num_pzs < 1:
         msg = "num_pzs must be >= 1."
         raise ValueError(msg)
 
-    candidates = _boundary_edge_candidates(m, n, v, h)
+    if num_pzs <= 4:
+        candidates = _boundary_edge_candidates(m, n, v, h)
+    else:
+        candidates = _all_line_balanced_candidates(m, n, v, h)
     if num_pzs > len(candidates):
-        msg = f"Requested {num_pzs} PZs, but only {len(candidates)} boundary edges are available."
+        msg = f"Requested {num_pzs} PZs, but only {len(candidates)} candidate edges are available."
         raise ValueError(msg)
 
     pz_definitions: dict[str, ProcessingZone] = {}
