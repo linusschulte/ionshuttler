@@ -4,10 +4,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .types import Edge
+    from .types import Edge, Node
 
 
 @dataclass
 class ProcessingZone:
     name: str
     edge_idc: Edge
+    processing_zone: Node

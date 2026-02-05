@@ -27,7 +27,15 @@ from inside.cycles import create_starting_config, get_ion_chains
 from inside.graph_creator import GraphCreator
 from inside.helper import generate_pzs
 from inside.shuttle import main as run_shuttle_main
-from inside.compilation import compile as compile_qasm
+
+
+import sys
+from pathlib import Path
+# To enable importing existing types from outside
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from outside.compilation import compile_qasm_file as compile_qasm
+from outside.types import GateInfo
 from outside.partition import get_partition
 #from outside.compilation import create_initial_sequence
 
@@ -69,10 +77,11 @@ def _extract_legacy_metrics(output: str) -> tuple[int, timedelta]:
         raise RuntimeError(f"{msg}\nFull output:\n{output}")
     return final_timesteps, cpu_time
 
-def _calculate_timestep_lower_bound(sequence: list[tuple[int, ...]], num_pzs: int) -> int:
+def _calculate_timestep_lower_bound(sequence: list[int], gate_info: dict[int, GateInfo], num_pzs: int) -> int:
     timestep_lower_bound = 0
-    for gate in sequence:
-        timestep_lower_bound += 3 if len(gate) > 1 else 1
+    for gate_id in sequence:
+        qubits = gate_info[gate_id].qubits
+        timestep_lower_bound += 3 if len(qubits) > 1 else 1
     return timestep_lower_bound // max(1, num_pzs)
 
 
@@ -222,6 +231,8 @@ def main(config: dict[str, Any]):
         print(f"Error: QASM file not found at {qasm_file_path}")
         sys.exit(1)
 
+    max_timesteps = _resolve_max_timesteps(config, num_ions)
+
     pz_definitions = generate_pzs(num_pzs=num_pzs_config, m=m, n=n, v=v, h=h)
     available_pz_names = list(pz_definitions.keys())
     pz_names_to_use = [f"pz{pz}" for pz in config.get("pz_numbers_to_use", range(1, num_pzs_config + 1))]
@@ -276,8 +287,10 @@ def main(config: dict[str, Any]):
     create_starting_config(graph, int(num_ions), seed=seed)
     
     
-    graph.sequence = compile_qasm(qasm_file_path)
-    timesteps_lower_bound = _calculate_timestep_lower_bound(graph.sequence, len(graph.pzs))
+    parsed = compile_qasm(qasm_file_path)
+    graph.sequence = parsed.sequence
+    graph.gate_info = parsed.gate_info
+    timesteps_lower_bound = _calculate_timestep_lower_bound(graph.sequence, graph.gate_info, len(graph.pzs))
     '''
     graph.state = get_ion_chains(graph)
     initial_circuit = create_initial_sequence(qasm_file_path)
@@ -306,7 +319,7 @@ def main(config: dict[str, Any]):
     print(f"Partitions: {partitions}")
 
     graph.map_to_pz = {qubit: pz_name for pz_name, qubits in partitions.items() for qubit in qubits}
-    all_qubits = {q for gate in graph.sequence for q in gate}
+    all_qubits = {q for gate_id in graph.sequence for q in graph.gate_info[gate_id].qubits}
     #all_qubits = {ion for gate_id in graph.sequence for ion in graph.gate_info[gate_id].qubits}
     if missing := sorted(all_qubits - set(graph.map_to_pz)):
         fallback_pz = graph.pzs[0].name
@@ -504,14 +517,13 @@ def main(config: dict[str, Any]):
     #final_timesteps = run_shuttle_main(graph, graph.sequence.copy(), cycle_or_paths_str)
     final_timesteps = run_shuttle_main(
         graph,
-        #graph.sequence.copy(), #shuttle_sequence.copy(),
         cycle_or_paths_str,
-        #max_timesteps=max_timesteps,
-        #gate_time_one_qubit=gate_time_one_qubit,
-        #gate_time_two_qubit=gate_time_two_qubit,
+        max_timesteps=max_timesteps,
     )
     cpu_time = datetime.now() - start_time
     if timeline_output:
+        algo = str(gate_partition_algorithm_cfg["name"]) if gate_partition_algorithm_cfg is not None else "none"
+        timeline_output = timeline_output + "_" + algorithm_name + "_" + algo + ".json"
         pzs_payload = {pz.name: _edge_to_strings(pz.edge_idc) for pz in graph.pzs}
         inner_pz_edges = [_edge_to_strings(pz.edge_idc) for pz in graph.pzs]
         architecture = {
@@ -528,7 +540,7 @@ def main(config: dict[str, Any]):
             "innerPZEdges": architecture["innerPZEdges"],
             "timeline": timeline_frames,
         }
-        out_path = pathlib.Path(timeline_output + "_inside.json") # + "_" + algorithm_name + "_" + algo + ".json")
+        out_path = pathlib.Path(timeline_output)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(payload, separators=(",", ":")))
         print(f"Wrote timeline JSON to {out_path} ({len(timeline_frames)} frames).")
@@ -687,11 +699,11 @@ if __name__ == "__main__":
     #################################################################################################################
     # Meta study configuration
     plot_move_hist = False
-    clear_prev = False
+    
     #unique_id = "generated_0.71_0.7_num_ions_4pzs"
     #unique_id = "balance_distance_sweep_20ions_4pzs"
     #unique_id = "num_pzs_mean_std_allswept_4pzs"
-    unique_id = "fgp_tabu_global_benchmark_2pzs_6perpz_WITHDAG"
+    
 
     # Declare partitioning algorithm parameters
     fgp_tabu = {
@@ -774,13 +786,13 @@ if __name__ == "__main__":
         "algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2", "qaoa_nativegates_quantinuum_opt2", "qpeexact_nativegates_quantinuum_qiskit_opt2", "random_nativegates_quantinuum_qiskit_opt2"],
         #"algorithm_name": ["random_nativegates_quantinuum_qiskit_opt2"],
         # Core architecture parameters
-        'num_ions': [20,30,40,50],
-        'num_pzs': [2],
-        'ions_per_pz': [6],
-        'grid_size': [4],
-        'mz_trap_size': [3],
+        'num_ions': [20,30,40],
+        'num_pzs': [10],
+        'ions_per_pz': [3],
+        'grid_size': [5],
+        'mz_trap_size': [1],
         #'pz_numbers_to_use': [[1,9,6,3,11,8]], 
-        'use_dag': [True],
+        'use_dag': [False],
         'enforce_slice_plan': [False],
         'enable_memory_zone_manager': [False],
         'save' : [False],
@@ -803,6 +815,10 @@ if __name__ == "__main__":
             #rehome
         ]
     }
+    dag_string = "WITHDAG" if meta_study_config.get("use_dag", False) else "NODAG"
+    unique_id = f"INSIDE_fgp_tabu_global_benchmark"
+    unique_id += f"_{str(meta_study_config['num_pzs'])}pzs_{str(meta_study_config['ions_per_pz'])}perpz_{dag_string}"
+    clear_prev = False
 
     if unique_id != "":
         #stamp = datetime.now().strftime("%Y%m%d_%H")

@@ -8,16 +8,17 @@ def _boundary_edge_candidates(m: int, n: int, v: int, h: int) -> list[Edge]:
     if m < 2 or n < 2:
         msg = "Inside PZ placement requires m >= 2 and n >= 2."
         raise ValueError(msg)
+    offset = 1 if m > 2 or n > 2 else 0
 
     max_row = (m - 1) * v
     max_col = (n - 1) * h
 
     # Corner-adjacent boundary edges, used first.
     prioritized: list[Edge] = [
-        ((0, 1), (0, 2)),
-        ((1, max_col), (2, max_col)),
-        ((max_row, max_col-1), (max_row, max_col - 2)),
-        ((max_row-1, 0), (max_row - 2, 0)),
+        ((0, offset), (0, 1+offset)),
+        ((max_row, max_col-offset), (max_row, max_col - 1 -offset)),
+        ((offset, max_col), (1+offset, max_col)),
+        ((max_row-offset, 0), (max_row - 1-offset, 0)),
     ]
 
     # Deterministic fallback pool if more than four PZs are requested.
@@ -91,7 +92,12 @@ def generate_pzs(num_pzs: int, m: int, n: int, v: int, h: int) -> dict[str, Proc
 
     pz_definitions: dict[str, ProcessingZone] = {}
     for idx, edge in enumerate(candidates[:num_pzs], start=1):
-        pz_definitions[f"pz{idx}"] = ProcessingZone(name=f"pz{idx}", edge_idc=edge)
+        processing_zone = edge[0]
+        pz_definitions[f"pz{idx}"] = ProcessingZone(
+            name=f"pz{idx}",
+            edge_idc=edge,
+            processing_zone=processing_zone,
+        )
     return pz_definitions
 
 

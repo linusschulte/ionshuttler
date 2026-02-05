@@ -94,9 +94,9 @@ def pick_pz_for_2_q_gate(graph: Graph, ion0: int, ion1: int) -> str:
 
 def create_priority_queue(
     graph: Graph,
-    sequence: list[tuple[int, ...]],
+    sequence: list[int],
     max_length: int = 10,
-) -> tuple[dict[int, str], dict[str, tuple[int, ...]]]:
+) -> tuple[dict[int, str], dict[str, int | None]]:
     """
     Create a priority queue based on a given graph and sequence of gates.
     Also creates a dictionary of the next gate of each processing zone.
@@ -111,43 +111,50 @@ def create_priority_queue(
         - The next gate at each processing zone
     """
     unique_sequence: dict[int, str] = OrderedDict()
-    next_gate_at_pz: dict[str, tuple[int, ...]] = {}
-    for seq_elem in sequence:
+    next_gate_at_pz: dict[str, int | None] = {}
+    for gate_id in sequence:
+        qubits = graph.gate_qubits(gate_id)
+        preferred_pz = graph.preferred_pz_for_gate(gate_id)
         # 1-qubit gate
-        if len(seq_elem) == 1:
-            elem = seq_elem[0]
+        if len(qubits) == 1:
+            elem = qubits[0]
+            target_pz = preferred_pz or graph.map_to_pz[elem]
 
             # add first gate of pz to next_gate_at_pz (if not already there)
-            if graph.map_to_pz[elem] not in next_gate_at_pz:
-                next_gate_at_pz[graph.map_to_pz[elem]] = seq_elem
+            if target_pz not in next_gate_at_pz:
+                next_gate_at_pz[target_pz] = gate_id
 
             # add ion to unique_sequence
             if elem not in unique_sequence:
-                unique_sequence[elem] = graph.map_to_pz[elem]
+                unique_sequence[elem] = target_pz
                 if len(unique_sequence) == max_length:
                     break
 
         # 2-qubit gate
-        elif len(seq_elem) == 2:
-            if seq_elem not in graph.locked_gates:
+        elif len(qubits) == 2:
+            ion0, ion1 = qubits
+            if preferred_pz is not None:
+                pz_for_2_q_gate = preferred_pz
+                graph.locked_gates[gate_id] = pz_for_2_q_gate
+            elif gate_id not in graph.locked_gates:
                 # pick processing zone for 2-qubit gate
-                pz_for_2_q_gate = pick_pz_for_2_q_gate(graph, seq_elem[0], seq_elem[1])
+                pz_for_2_q_gate = pick_pz_for_2_q_gate(graph, ion0, ion1)
                 # new in multishuttler outside:
                 # graph.locked_gates[seq_elem] = pz_for_2_q_gate
             else:
-                pz_for_2_q_gate = graph.locked_gates[seq_elem]
+                pz_for_2_q_gate = graph.locked_gates[gate_id]
 
             # add first gate of pz to next_gate_at_pz (if not already there)
             if pz_for_2_q_gate not in next_gate_at_pz:
-                next_gate_at_pz[pz_for_2_q_gate] = seq_elem
+                next_gate_at_pz[pz_for_2_q_gate] = gate_id
                 # lock the processing zone for the 2-qubit gate for later iterations
                 # otherwise maybe pz changes if both move in a way, that favors a new pz
                 # -> could result in a bug, if the very next iterations
                 # change state back to old pz
-                graph.locked_gates[seq_elem] = pz_for_2_q_gate
+                graph.locked_gates[gate_id] = pz_for_2_q_gate
 
             # add ions to unique_sequence
-            for elem in seq_elem:
+            for elem in qubits:
                 if elem not in unique_sequence:
                     unique_sequence[elem] = pz_for_2_q_gate
                     if len(unique_sequence) == max_length:
@@ -159,7 +166,7 @@ def create_priority_queue(
         # at the end fill all empty pzs with ()
         for pz in graph.pzs:
             if pz.name not in next_gate_at_pz:
-                next_gate_at_pz[pz.name] = ()
+                next_gate_at_pz[pz.name] = None
     return unique_sequence, next_gate_at_pz
 
 
@@ -183,21 +190,26 @@ def get_partitioned_priority_queues(priority_queue: dict[int, str]) -> dict[str,
 def create_gate_info_list(graph: Graph) -> dict[str, list[int]]:
     # create list of next gate at each processing zone
     gate_info_list: dict[str, list[int]] = {pz.name: [] for pz in graph.pzs}
-    for seq_elem in graph.sequence:
-        if len(seq_elem) == 1:
-            elem = seq_elem[0]
-            pz = graph.map_to_pz[elem]
+    for gate_id in graph.sequence:
+        qubits = graph.gate_qubits(gate_id)
+        preferred_pz = graph.preferred_pz_for_gate(gate_id)
+        if len(qubits) == 1:
+            elem = qubits[0]
+            pz = preferred_pz or graph.map_to_pz[elem]
             if gate_info_list[pz] == []:
                 gate_info_list[pz].append(elem)
-        elif len(seq_elem) == 2:
+        elif len(qubits) == 2:
             # only pick processing zone for 2-qubit gate if not already locked
-            if seq_elem not in graph.locked_gates:
-                pz = pick_pz_for_2_q_gate(graph, seq_elem[0], seq_elem[1])
+            if preferred_pz is not None:
+                pz = preferred_pz
+                graph.locked_gates[gate_id] = pz
+            elif gate_id not in graph.locked_gates:
+                pz = pick_pz_for_2_q_gate(graph, qubits[0], qubits[1])
             else:
-                pz = graph.locked_gates[seq_elem]
+                pz = graph.locked_gates[gate_id]
             if gate_info_list[pz] == []:
-                gate_info_list[pz].append(seq_elem[0])
-                gate_info_list[pz].append(seq_elem[1])
+                gate_info_list[pz].append(qubits[0])
+                gate_info_list[pz].append(qubits[1])
         # break if all pzs have a gate
         if all(gate_info_list.values()):
             break
