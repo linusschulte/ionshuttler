@@ -152,16 +152,17 @@ def shuttle(
 
     labels = (f"timestep {timestep}", f"remaining sequence: {graph.sequence}")
 
-    plot_state(
-        graph,
-        labels,
-        plot_ions=True,
-        show_plot=graph.plot,
-        save_plot=graph.save,
-        plot_cycle=False,
-        plot_pzs=False,
-        filename=unique_folder / f"{graph.arch}_timestep_{timestep}.png",
-    )
+    if graph.plot or graph.save:
+        plot_state(
+            graph,
+            labels,
+            plot_ions=True,
+            show_plot=graph.plot,
+            save_plot=graph.save,
+            plot_cycle=False,
+            plot_pzs=False,
+            filename=unique_folder / f"{graph.arch}_timestep_{timestep}.png",
+        )
 
 
 def main(graph: Graph, cycle_or_paths: str, max_timesteps: int | None = None) -> int:
@@ -173,16 +174,17 @@ def main(graph: Graph, cycle_or_paths: str, max_timesteps: int | None = None) ->
     if graph.save is True:
         unique_folder.mkdir(exist_ok=True, parents=True)
 
-    plot_state(
-        graph,
-        labels=("Initial state", None),
-        plot_ions=True,
-        show_plot=graph.plot,
-        save_plot=graph.save,
-        plot_cycle=False,
-        plot_pzs=True,
-        filename=unique_folder / f"{graph.arch}_timestep_{timestep}.png",
-    )
+    if graph.plot or graph.save:
+        plot_state(
+            graph,
+            labels=("Initial state", None),
+            plot_ions=True,
+            show_plot=graph.plot,
+            save_plot=graph.save,
+            plot_cycle=False,
+            plot_pzs=True,
+            filename=unique_folder / f"{graph.arch}_timestep_{timestep}.png",
+        )
 
     graph.in_process = []
     graph.locked_gates = {}
@@ -193,8 +195,9 @@ def main(graph: Graph, cycle_or_paths: str, max_timesteps: int | None = None) ->
         if DEBUG_FLAG:
             print("------------------------------------------------------")
             print(f"\nStarting timestep {timestep}")
-            print("locked_gates", graph.locked_gates)
-            print(f"Upcoming sequence: {graph.sequence[:10]} ...")
+            if not graph.gate_pz_assignment:
+                print("locked_gates", graph.locked_gates)
+            print(f"Upcoming sequence: {[(gate_id, graph.gate_info[gate_id].qubits) for gate_id in graph.sequence[:10]]}")
 
         # priority queue is dict with ions as keys and pz as values
         # (for 2-qubit gates pz may not match the pz of the individual ion)

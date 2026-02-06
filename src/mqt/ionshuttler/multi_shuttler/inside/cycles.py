@@ -20,26 +20,60 @@ def create_starting_config(graph: Graph, n_of_chains: int, seed: int | None = No
     # Initialize ions on edges using an edge attribute
     nx.set_edge_attributes(graph, {edge: [] for edge in graph.edges}, "ions")
 
+    processing_edges = [
+        edges for edges in graph.edges() if graph.get_edge_data(edges[0], edges[1])["edge_type"] == "processing"
+    ]
+    traps = [edges for edges in graph.edges() if graph.get_edge_data(edges[0], edges[1])["edge_type"] == "trap"]
+
+    processing_capacities = {edge: graph.max_ions_per_pz for edge in processing_edges}
+    total_processing_capacity = sum(processing_capacities.values())
+    total_capacity = total_processing_capacity + len(traps)
+    if n_of_chains > total_capacity:
+        raise ValueError(
+            f"Requested {n_of_chains} ions but capacity is {total_capacity} "
+            f"({len(processing_edges)} processing zones, {len(traps)} traps)."
+        )
+
     if seed is not None:
         random.seed(seed)
-        starting_traps = []
-        traps = list(graph.edges())
-        n_of_traps = len(traps)
+        random.shuffle(processing_edges)
+        random.shuffle(traps)
 
-        random_starting_traps = random.sample(range(n_of_traps), (n_of_chains))
-        for trap in random_starting_traps:
-            starting_traps.append(traps[trap])
-    else:
-        starting_traps = [
-            edges for edges in graph.edges() if graph.get_edge_data(edges[0], edges[1])["edge_type"] == "trap"
-        ][:n_of_chains]
-    number_of_registers = len(starting_traps)
+    placed = 0
+    # Fill processing zones up to their capacity first.
+    for edge in processing_edges:
+        if placed >= n_of_chains:
+            break
+        cap = processing_capacities[edge]
+        current = []
+        for _ in range(cap):
+            if placed >= n_of_chains:
+                break
+            current.append(placed)
+            placed += 1
+        if current:
+            graph.edges[edge]["ions"] = current
 
-    # place ions onto traps (ion0 on starting_trap0)
-    for ion, idc in enumerate(starting_traps):
-        graph.edges[idc]["ions"] = [ion]
+    # Then distribute remaining ions one each on trap edges.
+    for edge in traps:
+        if placed >= n_of_chains:
+            break
+        graph.edges[edge]["ions"] = [placed]
+        placed += 1
 
-    return number_of_registers
+    return len(traps)
+
+
+def _edge_capacity(graph: Graph, edge: Edge) -> int:
+    """Determine per-edge ion capacity based on orientation and grid spacing."""
+    (u0, u1), (v0, v1) = edge
+    # vertical edge (different x)
+    if u0 != v0:
+        return max(getattr(graph, "ion_chain_size_vertical", 1), 1)
+    # horizontal edge (different y)
+    if u1 != v1:
+        return max(getattr(graph, "ion_chain_size_horizontal", 1), 1)
+    return 1
 
 
 def get_ion_chains(graph: Graph) -> dict[int, Edge]:

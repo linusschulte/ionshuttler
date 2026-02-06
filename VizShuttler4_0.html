@@ -1,0 +1,1694 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Grid + PZ Placement + Ions (segments)</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --panel: #121821;
+      --ink: #e8eef6;
+      --muted: #93a4b7;
+      --accent: #68b5ff;
+      --accent-2: #e26d5a;
+      --good: #33d29f;
+      --warn: #ffb020;
+      --radius: 16px;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial; background: var(--bg); color: var(--ink); }
+    header { padding: 16px 20px; display: flex; align-items: center; gap: 12px; background: linear-gradient(180deg, #0e141d, #0a0f15); border-bottom: 1px solid #1e2a38; }
+    header h1 { font-size: 16px; font-weight: 600; margin: 0; letter-spacing: 0.2px; opacity: .95; }
+    .wrap { display: grid; grid-template-columns: 420px minmax(50%, 1fr) clamp(480px, 36vw, 704px); gap: 16px; padding: 16px; }
+    @media (max-width: 1400px) {
+      .wrap { grid-template-columns: 380px 1fr; }
+      .circuit-panel { grid-column: 1 / -1; }
+    }
+    @media (max-width: 1100px) { .wrap { grid-template-columns: 1fr; } }
+    .panel { background: var(--panel); border: 1px solid #1e2a38; border-radius: var(--radius); box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+    .controls { padding: 16px; display: grid; gap: 16px; }
+    .group { display: grid; gap: 10px; }
+    .group h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--muted); letter-spacing: .3px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    label { font-size: 14px; color: var(--ink); opacity: .9; }
+    input[type=number], input[type=text], textarea { width: 100%; padding: 10px 12px; border-radius: 12px; border: 1px solid #243246; background: #0f151e; color: var(--ink); font-size: 14px; outline: none; }
+    textarea { height: 140px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    button, .seg button { cursor: pointer; }
+    button { padding: 10px 14px; border-radius: 12px; border: 1px solid #243246; background: #0f151e; color: var(--ink); font-weight: 600; letter-spacing: .2px; box-shadow: 0 6px 16px rgba(0,0,0,.25); transition: transform .05s ease, background .2s ease, border-color .2s ease; }
+    button:hover { background: #101826; }
+    button:active { transform: translateY(1px); }
+    .primary { background: linear-gradient(180deg, #1b2736, #15202d); border-color: #2a3b52; }
+    .accent { background: linear-gradient(180deg, #244a6d, #1c3a55); border-color: #2d5c86; color: white; }
+    .good { background: linear-gradient(180deg, #145b46, #0e4535); border-color: #1f7b62; color: #e8fff8; }
+
+    .seg { display: grid; grid-template-columns: repeat(4, 1fr); background: #0f151e; border: 1px solid #243246; border-radius: 12px; overflow: hidden; }
+    .seg button { padding: 10px 0; border: none; background: transparent; color: var(--ink); font-weight: 600; }
+    .seg button.active { background: #1a2534; color: #e5f2ff; }
+    .seg button:disabled { opacity: .45; cursor: not-allowed; }
+
+    .canvas-wrap { position: relative; padding: 12px; }
+    canvas { width: 100%; height: 70vh; display: block; border-radius: var(--radius); background: #0f151e; border: 1px solid #223148; }
+    .hint { padding: 0 16px 16px; color: var(--muted); font-size: 13px; line-height: 1.4; }
+    footer { padding: 12px 16px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: space-between; align-items: center; }
+    .pill { padding: 6px 10px; border-radius: 999px; background: #0f151e; border: 1px solid #233247; font-size: 12px; color: var(--muted); }
+    .testlog { white-space: pre-wrap; background: #0f151e; border: 1px solid #233247; border-radius: 12px; padding: 10px; color: #cfe6ff; font-size: 12px; }
+    .transport { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .transport input[type=range] { width: 220px; }
+    .chip { padding: 4px 8px; border-radius: 999px; background: #102031; color: #cfe6ff; border: 1px solid #24415d; font-size: 12px; }
+
+    /* Quantum Circuit placeholder styles */
+    .circuit-panel { display: grid; grid-template-rows: auto 1fr auto; }
+    .circuit-wrap { padding: 0; }
+    .circuit-placeholder {
+      height: 70vh;
+      display: grid;
+      place-items: center;
+      border-radius: var(--radius);
+      background: #0f151e;
+      border: 1px solid #223148;
+      color: var(--muted);
+      font-size: 14px;
+      text-align: center;
+      padding: 12px;
+    }
+
+    /* Circuit SVG styles */
+    #qcSvg { width: 100%; height: 105vh; display: block; border-radius: var(--radius); background: #0f151e; border: 1px solid #223148; }
+    .qc-wire { stroke:#2a3b52; stroke-width:1.5; }
+    .qc-qubit-label { fill:#cfe6ff; font: 14px ui-sans-serif, system-ui; }
+    .qc-gate { fill:#000; stroke:#fff; stroke-width:1.5; }
+    .qc-gate.executing { stroke:#fff; stroke-width:3; }
+    .qc-connector { stroke:#fff; stroke-width:2; }
+    .qc-anim { transition: transform 220ms ease-in-out; will-change: transform; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Grid + PZ + Ions Player (segments)</h1>
+  </header>
+
+  <div class="wrap">
+    <div class="panel controls">
+      <div class="group">
+        <h3>Grid size</h3>
+        <div class="row">
+          <label for="rows">Rows</label>
+          <input id="rows" type="number" min="1" max="20" step="1" value="3" />
+          <label for="cols">Cols</label>
+          <input id="cols" type="number" min="1" max="20" step="1" value="3" />
+          <button id="fit" class="primary">Fit to Screen</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <h3>Sites per Edge</h3>
+        <div class="row">
+          <label for="sitesV">Vertical (segments)</label>
+          <input id="sitesV" type="number" min="1" max="32" step="1" value="3" />
+          <label for="sitesH">Horizontal (segments)</label>
+          <input id="sitesH" type="number" min="1" max="32" step="1" value="3" />
+        </div>
+        <div class="row" style="color:var(--muted); font-size:12px;">
+          Example: Vertical = 3 → each vertical edge becomes <strong>3 small edges</strong>
+          (with small nodes at 1 and 2).
+        </div>
+      </div>
+
+      <div class="group">
+        <h3>Place Processing Zone</h3>
+        <div class="seg" id="sideSeg">
+          <button data-side="top">Top</button>
+          <button data-side="right">Right</button>
+          <button data-side="bottom">Bottom</button>
+          <button data-side="left">Left</button>
+        </div>
+        <div class="row">
+          <button id="modeBtn" class="primary">Placing Mode: Off</button>
+          <button id="clearSide">Clear Selected Side</button>
+          <button id="clearAll">Clear All</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <h3>Timeline (JSON)</h3>
+        <textarea id="timelineText" placeholder='{
+  "architecture": {
+    "grid": { "rows": 3, "cols": 3 },
+    "sites": { "vertical": 3, "horizontal": 3 },
+    "pzs": { "top": true, "right": false, "bottom": false, "left": false },
+    "innerPZEdges": [
+      12, 34  // edge indices of grid segment edges
+    ]
+  },
+  "timeline": [
+    { "t": 0, "ions": [
+      { "id": "$q_0$", "edge": ["(0, 0)", "(0, 1)"] },
+      { "id": "$q_1$", "edge": ["(0, 3)", "(1, 3)"] }
+    ]},
+    { "t": 1, "ions": [
+      { "id": "$q_0$", "edge": ["(0, 1)", "(0, 2)"] },
+      { "id": "$q_1$", "edge": ["(1, 3)", "(2, 3)"] }
+    ]}
+  ]
+}'></textarea>
+        <div class="row">
+          <button id="loadTimeline" class="accent">Load JSON</button>
+          <button id="demoTimeline">Demo Data</button>
+          <button id="openJson">Open JSON…</button>
+        </div>
+        <!-- Hidden file input for iPad/local fallback -->
+        <input id="openFileInput" type="file" accept="application/json,.json" style="display:none" />
+      </div>
+
+      <div class="group">
+        <h3>Export / Tests</h3>
+        <div class="row">
+          <button id="exportJson" class="accent">Download JSON</button>
+          <button id="copyJson" class="good">Copy JSON</button>
+          <button id="runTests">Run Tests</button>
+        </div>
+        <div id="testLog" class="testlog" aria-live="polite"></div>
+      </div>
+
+      <div class="hint">
+        <span class="chip">New</span> Ions can sit on <em>small edges</em>: any adjacent integer lattice pair,
+        e.g. <code>("(0,0)","(0,1)")</code> or <code>("(2,3)","(3,3)")</code>. PZ tokens now are:
+        <code>PZ(top):connection_into_pz:0</code>, <code>PZ(top):connection_out_of_pz</code>, <code>PZ(top):parking</code>.
+        (Legacy: <code>exit</code>=<code>connection_into_pz</code>, <code>entry</code>=<code>connection_out_of_pz</code>.)
+        <br/><br/>
+        <span class="chip">Also New</span> With Placing Mode ON you can either:
+        <ul style="margin:8px 0 0 16px; padding:0 0 0 16px; color:var(--muted)">
+          <li>Click a <strong>side band</strong> to place an <em>outer</em> PZ (and its connections), or</li>
+          <li>Click a <strong>grid edge</strong> to mark it as an <em>inner</em> PZ edge.</li>
+        </ul>
+        Once you choose outer/inner, the other stays disabled until you <em>Clear All</em>.
+      </div>
+    </div>
+
+    <div class="panel canvas-wrap">
+      <canvas id="cv" aria-label="Grid canvas" role="img"></canvas>
+      <footer>
+        <div class="transport">
+          <button id="playBtn">▶︎ Play</button>
+          <button id="prevBtn">⟨ Step</button>
+          <button id="nextBtn">Step ⟩</button>
+          <input id="scrub" type="range" min="0" max="0" step="0.001" value="0" />
+          <label>Speed <input id="speed" type="number" min="0.1" max="5" step="0.1" value="1" style="width:80px" /></label>
+          <span class="pill" id="timeLabel">t = 0.00</span>
+          <button id="labelsBtn" class="primary">Node Labels: Off</button>
+        </div>
+        <div class="row">
+          <span class="pill" id="status">Ready</span>
+        </div>
+      </footer>
+    </div>
+
+    <!-- Replace placeholder circuit panel content with SVG canvas -->
+    <div class="panel circuit-panel" aria-label="Quantum Circuit Placeholder">
+      <div class="controls" style="padding-bottom:0;">
+        <div class="group">
+          <h3>Quantum Circuit</h3>
+          <div class="row" style="color:var(--muted); font-size:12px;">
+            Shows upcoming gates by time step; executing column is highlighted.
+          </div>
+        </div>
+      </div>
+      <div class="circuit-wrap">
+        <svg id="qcSvg" viewBox="0 0 900 520" preserveAspectRatio="xMinYMin meet" aria-label="Quantum Circuit"></svg>
+      </div>
+      <footer style="padding:12px 16px; display:flex; gap:8px; align-items:center; justify-content:space-between;">
+        <div>
+          <button class="primary" disabled>Import QASM</button>
+          <button disabled>Load from File</button>
+        </div>
+        <span class="pill">Circuit panel</span>
+      </footer>
+    </div>
+  </div>
+
+  <script>
+    const cv = document.getElementById('cv');
+    const ctx = cv.getContext('2d');
+
+    const rowsInput = document.getElementById('rows');
+    const colsInput = document.getElementById('cols');
+    const sitesVInput = document.getElementById('sitesV');
+    const sitesHInput = document.getElementById('sitesH');
+    const fitBtn = document.getElementById('fit');
+    const seg = document.getElementById('sideSeg');
+    const modeBtn = document.getElementById('modeBtn');
+    const clearSideBtn = document.getElementById('clearSide');
+    const clearAllBtn = document.getElementById('clearAll');
+    const exportBtn = document.getElementById('exportJson');
+    const copyBtn = document.getElementById('copyJson');
+    const runTestsBtn = document.getElementById('runTests');
+    const loadTimelineBtn = document.getElementById('loadTimeline');
+    const demoTimelineBtn = document.getElementById('demoTimeline');
+    const timelineText = document.getElementById('timelineText');
+    const openJsonBtn = document.getElementById('openJson');
+    const openFileInput = document.getElementById('openFileInput');
+
+    const playBtn = document.getElementById('playBtn');
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const scrub = document.getElementById('scrub');
+    const speedInput = document.getElementById('speed');
+    const timeLabel = document.getElementById('timeLabel');
+
+    const status = document.getElementById('status');
+    const testLog = document.getElementById('testLog');
+    const labelsBtn = document.getElementById('labelsBtn'); // ← keep ONLY this declaration
+
+    const PZ_SEGMENTS = 8;
+    const PZ_OFFSET = 64;
+    const PZ_UNIT   = 1.0;
+    const BASE_GUTTER = 2;
+    const EXTRA_PAD   = 2;
+
+    // Shared color palette for PZ sides
+    const PZ_COLORS = { top: '#68b5ff', right: '#ffd166', bottom: '#e26d5a', left: '#33d29f' };
+
+    const state = {
+      rows: 3,
+      cols: 3,
+      sitesV: 3,
+      sitesH: 3,
+      pzs: { top: false, right: false, bottom: false, left: false },
+      activeSide: null,
+      placingMode: false,
+      pzPlacementType: null, // null | 'outer' | 'inner'
+      innerPZKeys: new Set(), // set of edge keys for grid_* segments
+      innerPZLabels: new Map(), // edge key -> label (e.g., pz1)
+      gridRect: { x: 80, y: 80, w: 600, h: 600 },
+      margin: 80,
+      graph: null,
+      timeline: null,
+      playing: false,
+      tNow: 0,
+      speed: 1,
+      showLabels: false,
+    };
+
+    function setStatus(msg) { status.textContent = msg; }
+    function log(msg) { testLog.textContent += msg + "\n"; }
+    function clearLog() { testLog.textContent = ""; }
+
+    function setCanvasSize() {
+      const ratio = window.devicePixelRatio || 1;
+      const cssW = cv.clientWidth;
+      const cssH = cv.clientHeight;
+      if (cssW === 0 || cssH === 0) return;
+
+      cv.width = Math.floor(cssW * ratio);
+      cv.height = Math.floor(cssH * ratio);
+      ctx.setTransform(1,0,0,1,0,0);
+      ctx.scale(ratio, ratio);
+
+      const m = state.margin;
+
+      const BASE_GUTTER = 4;
+      const EXTRA_PAD   = 4;
+
+      const baseTop    = (state.pzs.top    ? (PZ_OFFSET + EXTRA_PAD) : BASE_GUTTER);
+      const baseBottom = (state.pzs.bottom ? (PZ_OFFSET + EXTRA_PAD) : BASE_GUTTER);
+      const baseLeft   = (state.pzs.left   ? (PZ_OFFSET + EXTRA_PAD) : BASE_GUTTER);
+      const baseRight  = (state.pzs.right  ? (PZ_OFFSET + EXTRA_PAD) : BASE_GUTTER);
+
+      const kTop    = state.pzs.top    ? (PZ_UNIT / Math.max(1, state.sitesV)) : 0;
+      const kBottom = state.pzs.bottom ? (PZ_UNIT / Math.max(1, state.sitesV)) : 0;
+      const kLeft   = state.pzs.left   ? (PZ_UNIT / Math.max(1, state.sitesH)) : 0;
+      const kRight  = state.pzs.right  ? (PZ_UNIT / Math.max(1, state.sitesH)) : 0;
+
+      const A = Math.max(50, cssW - 2*m - (baseLeft + baseRight));
+      const B = Math.max(50, cssH - 2*m - (baseTop  + baseBottom));
+      const cellW = A / (Math.max(1, state.cols - 1) + (kLeft + kRight));
+      const cellH = B / (Math.max(1, state.rows - 1) + (kTop  + kBottom));
+      const cell  = Math.max(1, Math.min(cellW, cellH));
+
+      const extraLeft   = baseLeft   + kLeft   * cell;
+      const extraRight  = baseRight  + kRight  * cell;
+      const extraTop    = baseTop    + kTop    * cell;
+      const extraBottom = baseBottom + kBottom * cell;
+
+      const availW = Math.max(50, cssW - 2*m - extraLeft - extraRight);
+      const availH = Math.max(50, cssH - 2*m - extraTop  - extraBottom);
+
+      state.gridRect.w = cell * Math.max(1, (state.cols - 1));
+      state.gridRect.h = cell * Math.max(1, (state.rows - 1));
+      state.gridRect.x = m + extraLeft  + (availW - state.gridRect.w) / 2;
+      state.gridRect.y = m + extraTop   + (availH - state.gridRect.h) / 2;
+    }
+
+    // ---- Geometry & lattice helpers ----
+    function getGeom() {
+      const { x, y, w, h } = state.gridRect;
+      const cellW = w / Math.max(1, (state.cols - 1));
+      const cellH = h / Math.max(1, (state.rows - 1));
+      const xs = Array.from({ length: state.cols }, (_, c) => x + c * cellW);
+      const ys = Array.from({ length: state.rows }, (_, r) => y + r * cellH);
+      return { x, y, w, h, cellW, cellH, xs, ys };
+    }
+    function unitPixels() {
+      const { cellW, cellH } = getGeom();
+      return { pxPerRowUnit: cellH / state.sitesV, pxPerColUnit: cellW / state.sitesH };
+    }
+    function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+    // integer label helpers
+    function fmtInt(x) { return String(Math.round(x)); }
+    function labelForJunction_Integer(r, c) {
+      const rowUnit = state.sitesV, colUnit = state.sitesH;
+      return `(${fmtInt(r*rowUnit)}, ${fmtInt(c*colUnit)})`;
+    }
+    function labelForVerticalSite_Integer(r, c, i) {
+      const rowUnit = state.sitesV, colUnit = state.sitesH;
+      return `(${fmtInt(r*rowUnit + i)}, ${fmtInt(c*colUnit)})`;
+    }
+    function labelForHorizontalSite_Integer(r, c, i) {
+      const rowUnit = state.sitesV, colUnit = state.sitesH;
+      return `(${fmtInt(r*rowUnit)}, ${fmtInt(c*colUnit + i)})`;
+    }
+
+    // Parse "(R, C)" -> {R,C}
+    function parseNodeStr(s) {
+      if (Array.isArray(s) && s.length === 2) return { R: Number(s[0]), C: Number(s[1]) };
+      const m = String(s).trim().match(/^\(\s*([+-]?\d+(?:\.\d+)?)\s*,\s*([+-]?\d+(?:\.\d+)?)\s*\)$/);
+      if (!m) return null;
+      return { R: Number(m[1]), C: Number(m[2]) };
+    }
+
+    // ---- Node lists (for drawing small nodes) ----
+    function listJunctions() {
+      const { xs, ys } = getGeom();
+      const pts = [];
+      for (let r = 0; r < ys.length; r++) for (let c = 0; c < xs.length; c++)
+        pts.push({ x: xs[c], y: ys[r], r, c });
+      return pts;
+    }
+    function listEdgeSites() {
+      const { xs, ys } = getGeom();
+      const vSegs = Math.max(1, state.sitesV), hSegs = Math.max(1, state.sitesH);
+      const vertical = [], horizontal = [];
+      for (let c = 0; c < xs.length; c++) {
+        for (let r = 0; r < ys.length - 1; r++) {
+          const x = xs[c], y0 = ys[r], y1 = ys[r+1];
+          for (let i = 1; i < vSegs; i++) { const t = i / vSegs; vertical.push({ x, y: y0 + t*(y1-y0), c, r, i, kind:'v' }); }
+        }
+      }
+      for (let r = 0; r < ys.length; r++) {
+        for (let c = 0; c < xs.length - 1; c++) {
+          const y = ys[r], x0 = xs[c], x1 = xs[c+1];
+          for (let i = 1; i < hSegs; i++) { const t = i / hSegs; horizontal.push({ x: x0 + t*(x1-x0), y, c, r, i, kind:'h' }); }
+        }
+      }
+      return { vertical, horizontal };
+    }
+
+    // --- Draw lattice labels (junctions + small edge sites) ---
+    function drawLabelsInteger() {
+      ctx.save();
+      ctx.font = '11px ui-sans-serif, system-ui';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+
+      const drawTextWithHalo = (text, x, y) => {
+        const w = ctx.measureText(text).width;
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillRect(x - w/2 - 4, y - 2, w + 8, 16);
+        ctx.fillStyle = '#cfe6ff';
+        ctx.fillText(text, x, y);
+      };
+
+      const junctions = listJunctions();
+      for (const p of junctions) {
+        const label = labelForJunction_Integer(p.r, p.c);
+        drawTextWithHalo(label, p.x, p.y + 6);
+      }
+
+      const { vertical, horizontal } = listEdgeSites();
+      for (const s of vertical) {
+        const label = labelForVerticalSite_Integer(s.r, s.c, s.i);
+        drawTextWithHalo(label, s.x, s.y + 4);
+      }
+      for (const s of horizontal) {
+        const label = labelForHorizontalSite_Integer(s.r, s.c, s.i);
+        drawTextWithHalo(label, s.x, s.y + 4);
+      }
+
+      ctx.restore();
+    }
+
+    // ---- Graph ----
+    function buildGraph() {
+      setCanvasSize();
+      const { xs, ys, x, y, w, h } = getGeom();
+      const nodes = []; const edges = [];
+      const jId = (r,c) => r*(xs.length) + c;
+      const nodeById = new Map();
+
+      // lattice integer → nodeId
+      const latticeId = new Map(); // key "R,C" -> nodeId
+      const keyRC = (R,C)=>`${R},${C}`;
+
+      // PZ index container
+      const pzIndex = { top:null, right:null, bottom:null, left:null };
+
+      // adjacency + edge-by-node-pair
+      const adj = new Map(); // nodeId -> [{to, e}]
+      const edgeByPair = new Map(); // "min-max" -> edgeId
+      const addAdj = (a,b,eid) => {
+        if (!adj.has(a)) adj.set(a, []);
+        if (!adj.has(b)) adj.set(b, []);
+        adj.get(a).push({ to: b, e: eid });
+        adj.get(b).push({ to: a, e: eid });
+        const k = a < b ? `${a}-${b}` : `${b}-${a}`;
+        edgeByPair.set(k, eid);
+      };
+      const edgeIdBetween = (a,b) => {
+        const k = a < b ? `${a}-${b}` : `${b}-${a}`;
+        return edgeByPair.get(k) ?? null;
+      };
+
+      // Grid junction nodes
+      for (let r=0; r<ys.length; r++) for (let c=0; c<xs.length; c++) {
+        const id = jId(r,c);
+        const n = { id, x: xs[c], y: ys[r], kind: 'junction', r, c };
+        nodes.push(n); nodeById.set(id, n);
+        const R = r * state.sitesV, C = c * state.sitesH;
+        latticeId.set(keyRC(R,C), id);
+      }
+
+      // helper creators
+      let nextEdgeId = 0;
+      const addEdge = (aId, bId, kind, segments, meta={}) => {
+        const a = nodeById.get(aId), b = nodeById.get(bId);
+        const id = nextEdgeId++;
+        const dx = b.x - a.x, dy = b.y - a.y; const len = Math.hypot(dx, dy);
+        const e = { id, a: aId, b: bId, ax:a.x, ay:a.y, bx:b.x, by:b.y, kind, segments, length: len, ...meta };
+        edges.push(e);
+        addAdj(aId, bId, id);
+        return e;
+      };
+      const addFreeNode = (x,y,kind,meta={}) => {
+        const id = 1000000 + nodes.length;
+        const n = { id, x, y, kind, ...meta };
+        nodes.push(n); nodeById.set(id, n);
+        return n;
+      };
+
+      // Subdivide grid edges into per-segment NODES and EDGES
+      const vSegs = Math.max(1, state.sitesV), hSegs = Math.max(1, state.sitesH);
+
+      // vertical big edges
+      for (let c=0; c<xs.length; c++) {
+        for (let r=0; r<ys.length-1; r++) {
+          const topId = jId(r,c);
+          const botId = jId(r+1,c);
+          let prevId = topId;
+          for (let i=1; i<=vSegs; i++) {
+            const t = i / vSegs;
+            const nx = xs[c];
+            const ny = ys[r] + t*(ys[r+1]-ys[r]);
+            let currId;
+            if (i < vSegs) {
+              const R = r*state.sitesV + i, C = c*state.sitesH;
+              const node = addFreeNode(nx, ny, 'site_v', { r, c, i });
+              currId = node.id;
+              latticeId.set(keyRC(R,C), currId);
+            } else {
+              currId = botId;
+            }
+            addEdge(prevId, currId, 'grid_v_seg', 1, { r, c, segIndex: i-1, segCount: vSegs });
+            prevId = currId;
+          }
+        }
+      }
+
+      // horizontal big edges
+      for (let r=0; r<ys.length; r++) {
+        for (let c=0; c<xs.length-1; c++) {
+          const leftId  = jId(r,c);
+          const rightId = jId(r,c+1);
+          let prevId = leftId;
+          for (let i=1; i<=hSegs; i++) {
+            const t = i / hSegs;
+            const nx = xs[c] + t*(xs[c+1]-xs[c]);
+            const ny = ys[r];
+            let currId;
+            if (i < hSegs) {
+              const R = r*state.sitesV, C = c*state.sitesH + i;
+              const node = addFreeNode(nx, ny, 'site_h', { r, c, i });
+              currId = node.id;
+              latticeId.set(keyRC(R,C), currId);
+            } else {
+              currId = rightId;
+            }
+            addEdge(prevId, currId, 'grid_h_seg', 1, { r, c, segIndex: i-1, segCount: hSegs });
+            prevId = currId;
+          }
+        }
+      }
+
+      // ---- Processing Zones as scalable chains ----
+      const { pxPerRowUnit, pxPerColUnit } = unitPixels();
+
+      const buildPZChain = (side) => {
+        if (!state.pzs[side]) return;
+
+        let a1, a2, pjx, pjy, outward;
+        const Rmax = ys.length - 1;   // last row index (nodes-1)
+        const Cmax = xs.length - 1;   // last col index (nodes-1)
+        if (side==='top') {
+          a1 = { r: 0,    c: 0    };  // INTO from top-left
+          a2 = { r: 0,    c: Cmax };  // OUT  to top-right
+          pjx = x + w/2; pjy = y - PZ_OFFSET; outward = { x:0, y:-1 };
+        }
+        if (side==='right') {
+          a1 = { r: 0,    c: Cmax };  // INTO from top-right
+          a2 = { r: Rmax, c: Cmax };  // OUT  to bottom-right
+          pjx = x + w + PZ_OFFSET; pjy = y + h/2; outward = { x:1, y:0 };
+        }
+        if (side==='bottom') {
+          a1 = { r: Rmax, c: Cmax };  // INTO from bottom-right
+          a2 = { r: Rmax, c: 0    };  // OUT  to bottom-left
+          pjx = x + w/2; pjy = y + h + PZ_OFFSET; outward = { x:0, y:1 };
+        }
+        if (side==='left') {
+          a1 = { r: Rmax, c: 0    };  // INTO from bottom-left
+          a2 = { r: 0,    c: 0    };  // OUT  to top-left
+          pjx = x - PZ_OFFSET; pjy = y + h/2; outward = { x:-1, y:0 };
+        }
+
+        const a1Id = jId(a1.r,a1.c);
+        const a2Id = jId(a2.r,a2.c);
+
+        const pzNode = addFreeNode(pjx, pjy, 'pzJunction', { side });
+
+        let num_edges;
+        if (side==='top' || side==='bottom') {
+          const span = Math.abs((a2.c*state.sitesH) - (a1.c*state.sitesH));
+          const chain = state.sitesH || 1;
+          num_edges = Math.max(1, Math.ceil( Math.ceil(span / chain) / 2 ));
+        } else {
+          const span = Math.abs((a2.r*state.sitesV) - (a1.r*state.sitesV));
+          const chain = state.sitesV || 1;
+          num_edges = Math.max(1, Math.ceil( Math.ceil(span / chain) / 2 ));
+        }
+
+        const intoEdges = []; // INTO PZ
+        const outEdges  = []; // OUT  of PZ
+
+        const splitChainCollect = (fromId, toX, toY, segments, edgeKind, sinkArray) => {
+          let prev = nodeById.get(fromId);
+          for (let i=1;i<=segments;i++){
+            const t = i/segments;
+            const nx = prev.x + t*(toX - prev.x);
+            const ny = prev.y + t*(toY - prev.y);
+            const isLast = (i===segments);
+            const node = isLast ? { id: pzNode.id, x: pzNode.x, y: pzNode.y } : addFreeNode(nx, ny, 'pzConn', { side });
+            const bId = isLast ? pzNode.id : node.id;
+            const e = addEdge(prev.id, bId, edgeKind, PZ_SEGMENTS, { side, segIndex: i-1, segCount: segments });
+            sinkArray.push(e.id);
+            if (!isLast) prev = node;
+          }
+        };
+
+        splitChainCollect(a1Id, pzNode.x, pzNode.y, num_edges, 'pz_into', intoEdges);
+        splitChainCollect(a2Id, pzNode.x, pzNode.y, num_edges, 'pz_out',  outEdges);
+
+        // Make connection_out_of_pz:0 be the segment next to the PZ node
+        outEdges.reverse();
+
+        const offX = outward.x !== 0 ? outward.x * (PZ_UNIT * pxPerColUnit) : 0;
+        const offY = outward.y !== 0 ? outward.y * (PZ_UNIT * pxPerRowUnit) : 0;
+        const park = addFreeNode(pzNode.x + offX, pzNode.y + offY, 'pzParking', { side });
+        const parkingEdge = addEdge(pzNode.id, park.id, 'pz_parking', PZ_SEGMENTS, { side });
+
+        pzIndex[side] = {
+          pzNodeId: pzNode.id,
+          a1Id, a2Id,
+          intoEdges, outEdges,
+          parkingEdgeId: parkingEdge.id
+        };
+      };
+
+      ['top','right','bottom','left'].forEach(buildPZChain);
+
+      return { nodes, edges, nodeById, latticeId, pzIndex, adj, edgeIdBetween };
+    }
+
+    function midOfEdge(e){ return { x: e.ax + 0.5*(e.bx-e.ax), y: e.ay + 0.5*(e.by-e.ay) }; }
+
+    // BFS shortest path on the node graph
+    function shortestNodePath(startId, goalId) {
+      const { adj } = state.graph;
+      if (startId === goalId) return [startId];
+      const q = [startId];
+      const prev = new Map([[startId, null]]);
+      while (q.length) {
+        const u = q.shift();
+        for (const {to} of (adj.get(u)||[])) {
+          if (prev.has(to)) continue;
+          prev.set(to, u);
+          if (to === goalId) {
+            const path = [to];
+            let cur = u;
+            while (cur != null) { path.push(cur); cur = prev.get(cur); }
+            path.reverse();
+            return path;
+          }
+          q.push(to);
+        }
+      }
+      return null;
+    }
+
+    function chooseEndpointsFor(e0, e1) {
+      const cand = [
+        { s:e0.a, g:e1.a }, { s:e0.a, g:e1.b },
+        { s:e0.b, g:e1.a }, { s:e0.b, g:e1.b },
+      ];
+      let best = null;
+      for (const c of cand) {
+        const path = shortestNodePath(c.s, c.g);
+        if (!path) continue;
+        if (!best || path.length < best.path.length) best = { ...c, path };
+      }
+      if (!best) best = { s:e0.b, g:e1.a, path:[e0.b, e1.a] };
+      return best;
+    }
+
+    // ---- Edge lookup for timeline ----
+    function edgeById(id) { return state.graph && state.graph.edges.find(e=>e.id===id); }
+
+    // Any adjacent lattice pair → specific segment edge
+    function edgeFromNodePair(nA, nB) {
+  if (!state.graph) return null;
+  const A = parseNodeStr(nA), B = parseNodeStr(nB);
+  if (!A || !B) return null;
+  const idA = state.graph.latticeId.get(`${Math.round(A.R)},${Math.round(A.C)}`);
+  const idB = state.graph.latticeId.get(`${Math.round(B.R)},${Math.round(B.C)}`);
+  if (idA == null || idB == null) return null;
+  return state.graph.edges.find(e => (e.a===idA && e.b===idB) || (e.a===idB && e.b===idA)) || null;
+}
+    // PZ token: "PZ(top):connection_into_pz:0", "PZ(top):connection_out_of_pz", "PZ(top):parking"
+    // Backward-compat: "exit" -> connection_into_pz, "entry" -> connection_out_of_pz
+    function edgeFromPZToken(tok) {
+      if (!state.graph || !state.graph.pzIndex) return null;
+
+      const s = String(tok).trim();
+
+      const legacy = s.replace(/:(exit)(?=[:]|$)/i, ':connection_into_pz')
+                      .replace(/:(entry)(?=[:]|$)/i, ':connection_out_of_pz');
+
+      const m = legacy.match(/^PZ\((top|right|bottom|left)\):(connection_into_pz|connection_out_of_pz|parking)(?::(\d+))?$/i);
+      if (!m) return null;
+      const side = m[1].toLowerCase();
+      const which = m[2].toLowerCase();
+      const idx   = m[3] != null ? parseInt(m[3],10) : null;
+      const pi = state.graph.pzIndex[side];
+      if (!pi) return null;
+
+      if (which === 'parking') {
+        return state.graph.edges.find(e => e.id === pi.parkingEdgeId) || null;
+      }
+      if (which === 'connection_into_pz') {
+        const i = idx != null ? idx : Math.floor(pi.intoEdges.length/2);
+        return state.graph.edges.find(e => e.id === pi.intoEdges[i]) || null;
+      }
+      if (which === 'connection_out_of_pz') {
+        const i = idx != null ? idx : Math.floor(pi.outEdges.length/2);
+        return state.graph.edges.find(e => e.id === pi.outEdges[i]) || null;
+      }
+      return null;
+    }
+
+    function parseEdgeSpec(spec) {
+      if (typeof spec === 'string' && spec.startsWith('PZ(')) return edgeFromPZToken(spec);
+      if (Array.isArray(spec) && spec.length === 2) return edgeFromNodePair(spec[0], spec[1]);
+      if (spec && typeof spec === 'object' && spec.pz) {
+        const which = spec.pz.which
+          ?.replace(/^exit$/i, 'connection_into_pz')
+          ?.replace(/^entry$/i, 'connection_out_of_pz');
+        const s = `PZ(${spec.pz.side}):${which}${spec.pz.i!=null?':'+spec.pz.i:''}`;
+        return edgeFromPZToken(s);
+      }
+      return null;
+    }
+
+    // ---- Helpers for inner PZ edges ----
+    function edgeKey(e) {
+      if (!e) return null;
+      if (e.kind === 'grid_v_seg' || e.kind === 'grid_h_seg') return e.id; // use edge index
+      return null;
+    }
+
+    function drawInnerPZs() {
+      if (!state.graph) return;
+      ctx.save();
+      for (const e of state.graph.edges) {
+        const id = (e.kind==='grid_v_seg' || e.kind==='grid_h_seg') ? e.id : null;
+        if (id==null || !state.innerPZKeys.has(id)) continue;
+        ctx.lineWidth = 4;
+        ctx.strokeStyle = '#68b5ff';
+        ctx.beginPath();
+        ctx.moveTo(e.ax, e.ay);
+        ctx.lineTo(e.bx, e.by);
+        ctx.stroke();
+
+        // cap with a tiny tag "PZ" at midpoint
+        const m = midOfEdge(e);
+        const capW=28, capH=16, rr=8; const capX=m.x-capW/2, capY=m.y-capH/2;
+        roundedRect(ctx, capX, capY, capW, capH, rr, '#1e2a3a', '#68b5ff');
+        ctx.fillStyle='#e5f2ff'; ctx.font='bold 10px system-ui'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        const label = state.innerPZLabels.get(id) || 'moin';
+        ctx.fillText(label, m.x, m.y);
+      }
+      ctx.restore();
+    }
+
+    // ---- Picking a grid segment under pointer ----
+    function distPointToSeg(px, py, ax, ay, bx, by) {
+      const vx = bx - ax, vy = by - ay;
+      const wx = px - ax, wy = py - ay;
+      const L2 = vx*vx + vy*vy || 1;
+      let t = (wx*vx + wy*vy) / L2; t = Math.max(0, Math.min(1, t));
+      const cx = ax + t*vx, cy = ay + t*vy;
+      const dx = px - cx, dy = py - cy; return Math.hypot(dx, dy);
+    }
+
+    function pickGridSegmentAt(px, py, thresh = 8) {
+      if (!state.graph) return null;
+      let best = null;
+      for (const e of state.graph.edges) {
+        if (e.kind !== 'grid_v_seg' && e.kind !== 'grid_h_seg') continue;
+        const d = distPointToSeg(px, py, e.ax, e.ay, e.bx, e.by);
+        if (d <= thresh && (!best || d < best.d)) best = { e, d };
+      }
+      return best ? best.e : null;
+    }
+
+    // ---- Drawing ----
+    function draw() {
+      const w = cv.clientWidth, h = cv.clientHeight;
+      ctx.clearRect(0,0,w,h);
+      drawGrid();
+      drawInnerPZs();
+      drawPZsFromGraph();
+      drawActiveGatePZHighlights();
+      drawSideHints();
+      drawIonsLayer();
+      if (state.showLabels) { drawLabelsInteger(); drawPZInOutLabels(); }
+    }
+
+    function drawActiveGatePZHighlights() {
+      if (!state.graph || !state.circuit || !state.circuit.gatesByCol) return;
+      const curT = Math.floor(state.tNow || 0);
+      const colorForSide = (side) => {
+        const s = (side||'').toString().toLowerCase();
+        if (s.includes('top')) return PZ_COLORS.top;
+        if (s.includes('right')) return PZ_COLORS.right;
+        if (s.includes('bottom')) return PZ_COLORS.bottom;
+        if (s.includes('left')) return PZ_COLORS.left;
+        return '#cfe6ff';
+      };
+      const highlights = [];
+      for (const [t0, arr] of state.circuit.gatesByCol) {
+        for (const g of arr) {
+          if (curT >= g.t0 && curT < g.t0 + g.duration && g.edgeEid != null) {
+            const side = g.pzSide || (g.pz || '').toLowerCase();
+            const col = colorForSide(side);
+            highlights.push({ edgeId: g.edgeEid, color: col });
+          }
+        }
+      }
+      if (highlights.length === 0) return;
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      for (const h of highlights) {
+        const e = edgeById(h.edgeId);
+        if (!e) continue;
+        // Outer glow
+        ctx.strokeStyle = h.color;
+        ctx.globalAlpha = 0.35; ctx.lineWidth = 10;
+        ctx.beginPath(); ctx.moveTo(e.ax, e.ay); ctx.lineTo(e.bx, e.by); ctx.stroke();
+        // Mid glow
+        ctx.globalAlpha = 0.7; ctx.lineWidth = 6;
+        ctx.beginPath(); ctx.moveTo(e.ax, e.ay); ctx.lineTo(e.bx, e.by); ctx.stroke();
+        // Core line
+        ctx.globalAlpha = 1.0; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(e.ax, e.ay); ctx.lineTo(e.bx, e.by); ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function drawGrid() {
+      const { x, y, w, h, xs, ys } = getGeom();
+      const r = 12;
+      ctx.save();
+      ctx.beginPath(); roundedRectPath(ctx, x, y, w, h, r); ctx.clip();
+      ctx.fillStyle = '#0e151f'; ctx.fillRect(x, y, w, h);
+      ctx.lineWidth = 1; ctx.strokeStyle = '#2a3b52';
+      ctx.beginPath();
+      for (const gx of xs) { ctx.moveTo(gx + 0.5, y); ctx.lineTo(gx + 0.5, y + h); }
+      for (const gy of ys) { ctx.moveTo(x, gy + 0.5); ctx.lineTo(x + w, gy + 0.5); }
+      ctx.stroke();
+      ctx.lineWidth = 2; ctx.strokeStyle = '#3a4f6c'; ctx.stroke();
+      ctx.restore();
+
+      const junctions = listJunctions();
+      ctx.save(); for (const p of junctions) drawNode(p.x, p.y, 3.5, '#e8f2ff', '#1b2534'); ctx.restore();
+      const { vertical, horizontal } = listEdgeSites();
+      ctx.save();
+      for (const p of vertical)  drawNode(p.x, p.y, 2.2, '#b8d6ff', '#22334a');
+      for (const p of horizontal) drawNode(p.x, p.y, 2.2, '#b8d6ff', '#22334a');
+      ctx.restore();
+    }
+
+    function drawPZsFromGraph() {
+      if (!state.graph) return;
+      for (const e of state.graph.edges) {
+        if (!e.kind || !e.kind.startsWith('pz_')) continue;
+        const side = e.side || (e.meta && e.meta.side) || null;
+        const col = (side && PZ_COLORS[side]) ? PZ_COLORS[side] : '#68b5ff';
+        ctx.save();
+        ctx.lineWidth = (e.kind==='pz_parking') ? 4 : 3;
+        ctx.strokeStyle = col;
+        ctx.beginPath(); ctx.moveTo(e.ax, e.ay); ctx.lineTo(e.bx, e.by); ctx.stroke();
+        ctx.restore();
+      }
+      for (const n of state.graph.nodes) {
+        if (n.kind === 'pzJunction') {
+          drawNode(n.x, n.y, 4.5, '#e8f2ff', '#1b2534');
+          ctx.save();
+          const capW=40, capH=22, rr=10; const capX=n.x-capW/2, capY=n.y-capH/2;
+          const side = n.side || (n.meta && n.meta.side) || null;
+          const col = (side && PZ_COLORS[side]) ? PZ_COLORS[side] : '#e26d5a';
+          roundedRect(ctx, capX, capY, capW, capH, rr, '#1e2a3a', col);
+          ctx.fillStyle='#ffeae5'; ctx.font='bold 12px system-ui, -apple-system, Segoe UI, Roboto'; ctx.textAlign='center'; ctx.textBaseline='middle';
+          ctx.fillText('PZ', n.x, n.y);
+          ctx.restore();
+        } else if (n.kind === 'pzConn') {
+          const side = n.side || (n.meta && n.meta.side) || null;
+          const col = (side && PZ_COLORS[side]) ? PZ_COLORS[side] : '#1b4332';
+          drawNode(n.x, n.y, 3.2, '#0f151e', col);
+        } else if (n.kind === 'pzParking') {
+          const side = n.side || (n.meta && n.meta.side) || null;
+          const col = (side && PZ_COLORS[side]) ? PZ_COLORS[side] : '#6b1f12';
+          drawNode(n.x, n.y, 4.0, '#0f151e', col);
+        }
+      }
+      // Removed unconditional drawPZInOutLabels here; it will be drawn under the node labels toggle in draw()
+    }
+
+    function drawPZInOutLabels() {
+      // Tie INTO/OUT labels to the node-labels toggle
+      if (!state.showLabels) return;
+      if (!state.graph || !state.graph.pzIndex) return;
+      ctx.save();
+      ctx.font = 'bold 10px ui-sans-serif, system-ui';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#e5f2ff';
+
+      const midOfEdgeId = (eid) => {
+        const e = state.graph.edges.find(x=>x.id===eid);
+        if (!e) return null;
+        return { x: e.ax + 0.5*(e.bx - e.ax), y: e.ay + 0.5*(e.by - e.ay) };
+      };
+
+      for (const side of ['top','right','bottom','left']) {
+        const pi = state.graph.pzIndex[side];
+        if (!pi) continue;
+        const inEdgeId  = pi.intoEdges[Math.floor(pi.intoEdges.length/2)];
+        const outEdgeId = pi.outEdges[Math.floor(pi.outEdges.length/2)];
+        const pin  = midOfEdgeId(inEdgeId);
+        const pout = midOfEdgeId(outEdgeId);
+        if (pin)  ctx.fillText('INTO', pin.x,  pin.y);
+        if (pout) ctx.fillText('OUT',  pout.x, pout.y);
+      }
+
+      ctx.restore();
+    }
+
+    function drawNode(nx, ny, radius, fill, stroke) {
+      ctx.beginPath(); ctx.arc(nx, ny, radius, 0, Math.PI * 2);
+      if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+      if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke(); }
+    }
+
+    function roundedRectPath(c, x, y, w, h, r) { const rr=Math.min(r,w/2,h/2); c.beginPath(); c.moveTo(x+rr,y); c.arcTo(x+w,y,x+w,y+h,rr); c.arcTo(x+w,y+h,x,y+h,rr); c.arcTo(x,y+h,x,y,rr); c.arcTo(x,y,x+w,y,rr); c.closePath(); }
+    function roundedRect(c, x, y, w, h, r, fill, stroke) { c.save(); roundedRectPath(c,x,y,w,h,r); if (fill){c.fillStyle=fill;c.fill();} if (stroke){c.strokeStyle=stroke;c.lineWidth=2;c.stroke();} c.restore(); }
+
+    // ---- Ions on edge midpoints ----
+    function prettyLatexId(id) {
+      const s = String(id).replace(/\$/g,'').trim();
+      const m = s.match(/^q(?:_\{?(\d+)\}?)*$/i);
+      if (!m) return s;
+      const digits = (m[1] || '0').split('');
+      const subMap = {'0':'₀','1':'₁','2':'₂','3':'₃','4':'₄','5':'₅','6':'₆','7':'₇','8':'₈','9':'₉'};
+      return 'q' + digits.map(d => subMap[d] || d).join('');
+    }
+    const ionColorCache = new Map();
+    function hashString(str) {
+      let h = 2166136261 >>> 0;
+      for (let i = 0; i < str.length; i++) {
+        h ^= str.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+      }
+      return h >>> 0;
+    }
+    function colorForIon(idStr) {
+      const key = String(idStr);
+      if (ionColorCache.has(key)) return ionColorCache.get(key);
+      const h = hashString(key) % 360;
+      const color = `hsl(${h} 70% 60%)`;
+      ionColorCache.set(key, color);
+      return color;
+    }
+    function drawIonsLayer() {
+      if (!state.timeline || !state.graph) return;
+      const ions = resolveIonsAtTime(state.tNow);
+      const byEdge = new Map();
+      for (const ion of ions) {
+        if (!byEdge.has(ion.edge)) byEdge.set(ion.edge, []);
+        byEdge.get(ion.edge).push(ion);
+      }
+      for (const [edgeId, group] of byEdge) {
+        const e = state.graph.edges.find(e=>e.id===edgeId);
+        if (!e) continue;
+        const dx = e.bx - e.ax, dy = e.by - e.ay;
+        const L = Math.hypot(dx,dy)||1;
+        const nx = -dy / L, ny = dx / L;
+        const areaLen = 0.5 * L;
+
+        // Sort ions deterministically
+        group.sort((a,b)=>a.id.localeCompare(b.id));
+        const n = group.length;
+        const spacing = areaLen / (n + 1);
+        for (let i = 0; i < n; i++) {
+          const ion = group[i];
+          const offset = (!ion.moving && n > 1) ? (i + 1 - (n + 1) / 2) * spacing : 0;
+          const baseX = ion.x + nx * offset;
+          const baseY = ion.y + ny * offset;
+          drawIon(baseX, baseY, ion.id);
+        }
+      }
+    }
+    function drawIon(x, y, idStr) {
+      const r = 4.5; ctx.save();
+      const fill = colorForIon(idStr);
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.fillStyle = fill; ctx.fill(); ctx.lineWidth = 1; ctx.strokeStyle = '#332b00'; ctx.stroke();
+      ctx.fillStyle = fill; ctx.font = '14px ui-sans-serif, system-ui'; ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.shadowColor = 'rgba(0,0,0,0.85)';
+      ctx.shadowBlur = 8;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 2;
+      const label = prettyLatexId(idStr);
+      ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+      ctx.lineWidth = 2;
+      ctx.strokeText(label, x, y - r - 2);
+      ctx.fillText(label, x, y - r - 2);
+      ctx.restore();
+    }
+
+    // ---- Timeline (edge-based) ----
+    function loadTimelineFromObject(obj) {
+      if (!obj || !Array.isArray(obj.timeline)) { setStatus('Invalid JSON: missing timeline[]'); return; }
+      const steps = [];
+      for (const step of obj.timeline) {
+        const t = typeof step.t === 'number' ? step.t : steps.length;
+        const ions = [];
+        for (const ion of (step.ions || [])) {
+          const e = parseEdgeSpec(ion.edge);
+          if (!e) { setStatus('Invalid edge in timeline; check node coordinates, adjacency, or PZ token'); continue; }
+          ions.push({ id: ion.id, edge: e.id });
+        }
+        steps.push({ t, ions });
+      }
+      state.timeline = { steps };
+      const maxT = steps.length>0 ? steps[steps.length-1].t : 0;
+      scrub.min = 0; scrub.max = maxT.toString(); scrub.step = '0.001'; scrub.value = '0';
+      state.tNow = 0; state.playing = false; playBtn.textContent = '▶︎ Play';
+      setStatus('Timeline loaded (small edges enabled)');
+      draw();
+      renderCircuit(); // keep QC in sync while playing
+    }
+
+    // --- NEW: apply architecture + PZ placement from JSON ---
+    // Supported formats:
+    // 1) Top-level keys: { grid:{rows,cols}, sites:{vertical,horizontal}, pzs:{top,right,bottom,left}, innerPZEdges:[edgeKeys], timeline:[...] }
+    // 2) Or nested under "architecture": { architecture:{ grid, sites, pzs, innerPZEdges }, timeline:[...] }
+    function applyArchitectureFromObject(obj) {
+      const arch = obj.architecture || obj;
+      const hasGrid = arch.grid && typeof arch.grid.rows === 'number' && typeof arch.grid.cols === 'number';
+      const hasSites = arch.sites && typeof arch.sites.vertical === 'number' && typeof arch.sites.horizontal === 'number';
+      const hasPZs = arch.pzs && typeof arch.pzs === 'object';
+      const hasInner = Array.isArray(arch.innerPZEdges);
+
+      if (!hasGrid && !hasSites && !hasPZs && !hasInner) return false;
+
+      if (hasGrid) {
+        state.rows = clamp(parseInt(arch.grid.rows,10),1,128);
+        state.cols = clamp(parseInt(arch.grid.cols,10),1,128);
+        rowsInput.value = state.rows; colsInput.value = state.cols;
+      }
+      if (hasSites) {
+        state.sitesV = clamp(parseInt(arch.sites.vertical,10),1,256);
+        state.sitesH = clamp(parseInt(arch.sites.horizontal,10),1,256);
+        sitesVInput.value = state.sitesV; sitesHInput.value = state.sitesH;
+      }
+
+      // Rebuild graph after structural changes
+      setCanvasSize();
+      state.graph = buildGraph();
+
+      let namedPZMode = false;
+      if (hasPZs) {
+        const keys = Object.keys(arch.pzs || {});
+        const isSideMap = keys.some(k => ['top','right','bottom','left'].includes(k));
+        if (isSideMap) {
+          state.pzs = { top: !!arch.pzs.top, right: !!arch.pzs.right, bottom: !!arch.pzs.bottom, left: !!arch.pzs.left };
+          state.graph = buildGraph();
+        } else {
+          namedPZMode = true;
+          state.pzs = { top: false, right: false, bottom: false, left: false };
+          state.pzPlacementType = 'inner';
+          state.innerPZKeys.clear();
+          state.innerPZLabels.clear();
+          for (const [name, edgeSpec] of Object.entries(arch.pzs)) {
+            let e = null;
+            if (Array.isArray(edgeSpec) && edgeSpec.length === 2) {
+              e = edgeFromNodePair(edgeSpec[0], edgeSpec[1]);
+            } else {
+              e = parseEdgeSpec(edgeSpec);
+            }
+            if (!e) continue;
+            state.innerPZKeys.add(e.id);
+            state.innerPZLabels.set(e.id, name);
+          }
+          state.graph = buildGraph();
+        }
+      }
+      if (hasInner) {
+        if (!namedPZMode) {
+          state.innerPZKeys.clear();
+          state.innerPZLabels.clear();
+        }
+        for (const k of arch.innerPZEdges) {
+          // Accept either numeric id or endpoint pair ["(r,c)","(r2,c2)"]
+          let id = null;
+          if (typeof k === 'number' || (typeof k === 'string' && /^\d+$/.test(k))) {
+            id = parseInt(k, 10);
+          } else if (Array.isArray(k) && k.length === 2) {
+            const e = edgeFromNodePair(k[0], k[1]);
+            id = e ? e.id : null;
+          }
+          if (id == null || !Number.isFinite(id)) continue;
+          const e = state.graph.edges.find(e=>e.id===id);
+          if (e && (e.kind==='grid_v_seg' || e.kind==='grid_h_seg')) state.innerPZKeys.add(id);
+        }
+      }
+
+      // Lock placement mode based on presence (if any provided)
+      if (hasInner && !hasPZs) state.pzPlacementType = 'inner';
+      else if (hasPZs && !hasInner) state.pzPlacementType = 'outer';
+
+      updatePlacementLockUI();
+      draw();
+      setStatus('Architecture applied from JSON');
+      return true;
+    }
+
+    
+function parseJsonLoose(text) {
+  const noLine = String(text).replace(/\/\/.*$/mg, '');
+  const noBlock = noLine.replace(/\/\*[\s\S]*?\*\//g, '');
+  return JSON.parse(noBlock);
+}
+
+function loadFromJsonObject(obj) {
+      const applied = applyArchitectureFromObject(obj.architecture ? obj.architecture : obj);
+      if (Array.isArray(obj.timeline)) {
+        // ensure graph exists
+        if (!state.graph) state.graph = buildGraph();
+        loadTimelineFromObject(obj);
+      } else if (!applied) {
+        setStatus('JSON parsed but no architecture or timeline found');
+      }
+    }
+
+    function demoTimeline() {
+      if (!state.graph) state.graph = buildGraph();
+      state.pzs.top = true; state.graph = buildGraph();
+      const steps = [
+        { t: 0, ions: [
+          { id: '$q_0$', edge: ["(0, 0)","(0, 1)"] },
+          { id: '$q_1$', edge: ["(0, 3)","(1, 3)"] }
+        ]},
+        { t: 1, ions: [
+          { id: '$q_0$', edge: ["(0, 1)","(0, 2)"] },
+          { id: '$q_1$', edge: ["(1, 3)","(2, 3)"] }
+        ]},
+        { t: 2, ions: [
+          { id: '$q_0$', edge: ["(0, 2)","(0, 3)"] },
+          { id: '$q_1$', edge: ["(2, 3)","(3, 3)"] }
+        ]},
+        { t: 3, ions: [
+          { id: '$q_0$', edge: ["(0, 3)","(1, 3)"] },
+          { id: '$q_1$', edge: "PZ(top):connection_into_pz:0" }
+        ]},
+        { t: 4, ions: [
+          { id: '$q_0$', edge: "PZ(top):connection_out_of_pz" },
+          { id: '$q_1$', edge: "PZ(top):connection_into_pz:1" }
+        ]},
+      ];
+      loadTimelineFromObject({ timeline: steps });
+      timelineText.value = JSON.stringify({ timeline: steps }, null, 2);
+    }
+
+    // ---- Animation ----
+    function resolveIonsAtTime(tNow) {
+      const steps = state.timeline?.steps || [];
+      if (steps.length === 0) return [];
+
+      const t0 = Math.floor(clamp(tNow, steps[0].t, steps[steps.length - 1].t));
+      const t1 = Math.min(t0 + 1, steps[steps.length - 1].t);
+      const alpha = (tNow - t0) / Math.max(1e-6, t1 - t0);
+      const S0 = steps.find(s => s.t === t0) || steps[0];
+      const S1 = steps.find(s => s.t === t1) || steps[steps.length - 1];
+
+      const map0 = new Map(S0.ions.map(o => [o.id, o]));
+      const map1 = new Map(S1.ions.map(o => [o.id, o]));
+      const ids = Array.from(new Set([...map0.keys(), ...map1.keys()])).sort();
+
+      const ions = [];
+
+      for (const id of ids) {
+        const a = map0.get(id), b = map1.get(id);
+        if (!a || !b) continue;
+        const e0 = edgeById(a.edge), e1 = edgeById(b.edge);
+        if (!e0 || !e1) continue;
+
+        if (e0.id === e1.id) {
+          const p = midOfEdge(e0);
+          ions.push({ id, x: p.x, y: p.y, edge: e0.id, moving: false });
+          continue;
+        }
+
+        const { nodeById, edgeIdBetween } = state.graph;
+
+        const startMid = midOfEdge(e0);
+        const endMid   = midOfEdge(e1);
+
+        const pick = chooseEndpointsFor(e0, e1);
+        const nodePath = (pick.path || [pick.s, pick.g]).map(nid => nodeById.get(nid));
+
+        const pts = [ startMid, ...nodePath.map(n => ({ x: n.x, y: n.y })), endMid ];
+
+        const segEdges = [];
+        for (let i = 0; i < pts.length - 1; i++) {
+          if (i === 0) {
+            segEdges.push(e0.id);
+          } else if (i === pts.length - 2) {
+            segEdges.push(e1.id);
+          } else {
+            const aNode = nodePath[i - 1];
+            const bNode = nodePath[i];
+            const eid = (aNode && bNode) ? edgeIdBetween(aNode.id, bNode.id) : null;
+            segEdges.push(eid != null ? eid : e0.id);
+          }
+        }
+
+        const segLen = [];
+        let total = 0;
+        for (let i = 0; i < pts.length - 1; i++) {
+          const L = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+          segLen.push(L);
+          total += L;
+        }
+        const target = alpha * (total || 1);
+
+        let acc = 0, si = 0;
+        while (si < segLen.length && acc + segLen[si] < target) { acc += segLen[si++]; }
+        const t = segLen[si] ? (target - acc) / segLen[si] : 0;
+
+        const A = pts[si], B = pts[si + 1] || pts[si];
+        const x = A.x + t * (B.x - A.x);
+        const y = A.y + t * (B.y - A.y);
+        const edgeId = segEdges[si] ?? e1.id;
+        ions.push({ id, x, y, edge: edgeId, moving: true });
+      }
+
+      return ions;
+    }
+
+    // ---- Interaction & UI ----
+    function sideAtPoint(px, py) {
+      const { x, y, w, h } = state.gridRect; const band = 40;
+      if (py >= y - band && py <= y     && px >= x && px <= x+w) return 'top';
+      if (py >= y + h    && py <= y+h+band && px >= x && px <= x+w) return 'bottom';
+      if (px >= x - band && px <= x     && py >= y && py <= y+h) return 'left';
+      if (px >= x + w    && px <= x+w+band && py >= y && py <= y+h) return 'right';
+      return null;
+    }
+    function getPointerPos(ev) {
+      if (ev && typeof ev._px === 'number' && typeof ev._py === 'number') return { x: ev._px, y: ev._py };
+      if (!ev || (typeof ev.clientX !== 'number')) return null;
+      const rect = cv.getBoundingClientRect();
+      return { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+    }
+
+    function updatePlacementLockUI() {
+      // Disable side buttons when inner mode is locked in, and vice versa
+      const disableSides = state.placingMode && state.pzPlacementType === 'inner';
+      for (const btn of seg.querySelectorAll('button')) btn.disabled = disableSides;
+      if (disableSides) {
+        setActiveSide(null);
+      }
+    }
+
+    function setPZ(side, value) { if (!side || !(side in state.pzs)) return null; const next=!!value; state.pzs[side]=next; setStatus(`${next ? 'Placed' : 'Removed'} ${side} PZ`); state.graph = buildGraph(); draw(); return next; }
+    function togglePZ(side) { if (!side || !(side in state.pzs)) return null; return setPZ(side, !state.pzs[side]); }
+    function drawSideHints() {
+      const { x, y, w, h } = state.gridRect; const band = 40;
+      ctx.save(); ctx.globalAlpha = 0.12; ctx.fillStyle = '#68b5ff';
+      const allowOuter = !state.placingMode || state.pzPlacementType !== 'inner';
+      if ((state.placingMode && allowOuter) || state.activeSide === 'top')    ctx.fillRect(x,     y-band, w, band);
+      if ((state.placingMode && allowOuter) || state.activeSide === 'bottom') ctx.fillRect(x,     y+h,    w, band);
+      if ((state.placingMode && allowOuter) || state.activeSide === 'left')   ctx.fillRect(x-band,y,     band, h);
+      if ((state.placingMode && allowOuter) || state.activeSide === 'right')  ctx.fillRect(x+w,   y,     band, h);
+      ctx.restore();
+    }
+
+    function onPointerDown(ev) {
+      if (!state.placingMode) { if (!state.activeSide) return; setPZ(state.activeSide, true); return; }
+      const p = getPointerPos(ev); if (!p) return;
+
+      const side = sideAtPoint(p.x, p.y);
+      const innerEdge = (!side) ? pickGridSegmentAt(p.x, p.y) : null;
+
+      // Lock-in logic: first valid click determines mode
+      if (side) {
+        if (state.pzPlacementType === null) state.pzPlacementType = 'outer';
+        if (state.pzPlacementType !== 'outer') { setStatus('Inner PZ placement active — Clear All or toggle Placing Mode to switch.'); return; }
+        setPZ(side, true);
+        updatePlacementLockUI();
+        return;
+      }
+
+      if (innerEdge) {
+        if (state.pzPlacementType === null) state.pzPlacementType = 'inner';
+        if (state.pzPlacementType !== 'inner') { setStatus('Outer PZ placement active — Clear All or toggle Placing Mode to switch.'); return; }
+        const id = edgeKey(innerEdge);
+        if (id==null) return;
+        if (state.innerPZKeys.has(id)) {
+          state.innerPZKeys.delete(id);
+          setStatus('Removed inner PZ from edge');
+        } else {
+          state.innerPZKeys.add(id);
+          setStatus('Marked inner PZ on edge');
+        }
+        draw();
+        updatePlacementLockUI();
+        return;
+      }
+    }
+
+    function setActiveSide(side) { state.activeSide = side; for (const btn of seg.querySelectorAll('button')) btn.classList.toggle('active', btn.dataset.side === side); setStatus(side ? `Tap canvas to place ${side} PZ` : 'Placement tool off'); state.graph = buildGraph(); draw(); }
+    function clearSide() { if (!state.activeSide) return; setPZ(state.activeSide, false); }
+    function clearAll() { state.pzs = { top: false, right: false, bottom: false, left: false }; state.innerPZKeys.clear(); state.pzPlacementType = null; setStatus('Cleared all PZs (outer + inner)'); state.graph = buildGraph(); updatePlacementLockUI(); draw(); }
+
+    function currentConfig() { return { grid: { rows: state.rows, cols: state.cols }, sites: { vertical: state.sitesV, horizontal: state.sitesH }, pzs: { ...state.pzs }, innerPZEdges: Array.from(state.innerPZKeys) }; }
+    function exportConfig() { const cfg = currentConfig(); const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `grid_pz_${state.rows}x${state.cols}_v${state.sitesV}_h${state.sitesH}.json`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); }
+    async function copyConfig() { const cfg = currentConfig(); try { await navigator.clipboard.writeText(JSON.stringify(cfg, null, 2)); setStatus('JSON copied to clipboard'); } catch { setStatus('Copy failed (browser permissions)'); } }
+
+    let lastTs = 0;
+    function raf(ts) {
+      const dt = (ts - (lastTs || ts)) / 1000; lastTs = ts;
+      if (state.playing && state.timeline) {
+        state.tNow += dt * state.speed;
+        const maxT = state.timeline.steps[state.timeline.steps.length-1].t;
+        if (state.tNow > maxT) { state.tNow = maxT; state.playing = false; playBtn.textContent = '▶︎ Play'; }
+        scrub.value = state.tNow.toFixed(3);
+        timeLabel.textContent = `t = ${state.tNow.toFixed(2)}`;
+        draw();
+        renderCircuit(); // keep QC in sync while playing
+      }
+      requestAnimationFrame(raf);
+    }
+
+    function assertTrue(cond, msg) { if (!cond) throw new Error(msg || 'Assertion failed'); }
+
+    function runTests() {
+      clearLog(); log('Running tests...');
+      try {
+        state.pzs = { top: true, right: false, bottom: false, left: false };
+        setCanvasSize(); state.graph = buildGraph(); draw(); log('✓ build with per-segment grid ok');
+
+        const segCount = state.graph.edges.filter(e=>e.kind==='grid_v_seg' || e.kind==='grid_h_seg').length;
+        assertTrue(segCount > 0, 'segment edges present');
+
+        // New tokens
+        const steps = [
+          { t: 0, ions: [ { id:'$q_0$', edge:["(0, 0)","(0, 1)"] } ] },
+          { t: 1, ions: [ { id:'$q_0$', edge:"PZ(top):connection_into_pz" } ] },
+        ];
+        loadTimelineFromObject({timeline:steps});
+        state.tNow = 0.5; const ions = resolveIonsAtTime(state.tNow);
+        assertTrue(ions.length===1, 'one ion midpoint path');
+
+        // Legacy still parses
+        const legacy = [
+          { t: 2, ions: [ { id:'$q_0$', edge:"PZ(top):exit:1" } ] },
+          { t: 3, ions: [ { id:'$q_0$', edge:"PZ(top):entry" } ] },
+        ];
+        loadTimelineFromObject({timeline:[...steps, ...legacy]});
+
+        // Inner PZ placement pick test (synthetic)
+        const g = state.graph; const anySeg = g.edges.find(e=>e.kind==='grid_h_seg');
+        if (anySeg) {
+          const m = midOfEdge(anySeg); onPointerDown({ _px:m.x, _py:m.y, clientX:0, clientY:0 });
+          assertTrue(state.innerPZKeys.size>=1, 'inner PZ edge marked');
+        }
+
+        log('\nAll tests passed.');
+      } catch (e) { log('✗ Test failed: ' + e.message); console.error(e); }
+    }
+
+    // Wire-up
+    rowsInput.addEventListener('input', () => { state.rows = clamp(parseInt(rowsInput.value||'1',10), 1, 50); rowsInput.value = state.rows; setCanvasSize(); state.graph = buildGraph(); draw(); });
+    colsInput.addEventListener('input', () => { state.cols = clamp(parseInt(colsInput.value||'1',10), 1, 50); colsInput.value = state.cols; setCanvasSize(); state.graph = buildGraph(); draw(); });
+    sitesVInput.addEventListener('input', () => { state.sitesV = clamp(parseInt(sitesVInput.value||'1',10), 1, 128); sitesVInput.value = state.sitesV; state.graph = buildGraph(); draw(); });
+    sitesHInput.addEventListener('input', () => { state.sitesH = clamp(parseInt(sitesHInput.value||'1',10), 1, 128); sitesHInput.value = state.sitesH; state.graph = buildGraph(); draw(); });
+
+    fitBtn.addEventListener('click', () => { setCanvasSize(); state.graph = buildGraph(); draw(); });
+    seg.addEventListener('click', (e) => { const btn = e.target.closest('button'); if (!btn || btn.disabled) return; const side = btn.dataset.side; setActiveSide(state.activeSide === side ? null : side); });
+    modeBtn.addEventListener('click', () => { state.placingMode = !state.placingMode; modeBtn.textContent = `Placing Mode: ${state.placingMode ? 'On' : 'Off'}`; updatePlacementLockUI(); setStatus(state.placingMode ? 'Placing Mode ON — click a side band (outer) or a grid edge (inner).' : 'Placing Mode OFF'); draw(); });
+    clearSideBtn.addEventListener('click', clearSide);
+    clearAllBtn.addEventListener('click', clearAll);
+    exportBtn.addEventListener('click', exportConfig);
+    copyBtn.addEventListener('click', copyConfig);
+    runTestsBtn.addEventListener('click', runTests);
+
+    loadTimelineBtn.addEventListener('click', () => {
+      try {
+        const obj = parseJsonLoose(timelineText.value);
+        loadFromJsonObject(obj);
+      } catch (e) { setStatus('Invalid JSON'); }
+    });
+    demoTimelineBtn.addEventListener('click', () => { state.graph = buildGraph(); demoTimeline(); });
+
+    // Generic JSON loader: always open file picker (iPad-safe)
+    openJsonBtn.addEventListener('click', () => {
+      setStatus('Select a JSON file…');
+      openFileInput.click();
+    });
+    openFileInput.addEventListener('change', async (ev) => {
+      const file = ev.target.files && ev.target.files[0];
+      if (!file) return;
+      try {
+        const txt = await file.text();
+        const obj = parseJsonLoose(txt);
+        loadFromJsonObject(obj);
+        timelineText.value = JSON.stringify(obj, null, 2);
+        setStatus(`Loaded ${file.name}`);
+      } catch {
+        setStatus('Invalid JSON in selected file');
+      } finally {
+        openFileInput.value = '';
+      }
+    });
+
+    cv.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('resize', () => { setCanvasSize(); state.graph = buildGraph(); draw(); renderCircuit(); });
+
+    playBtn.addEventListener('click', () => { if (!state.timeline) { setStatus('No timeline loaded'); return; } state.playing = !state.playing; playBtn.textContent = state.playing ? '❚❚ Pause' : '▶︎ Play'; if (!state.playing) draw(); });
+    prevBtn.addEventListener('click', () => { if (!state.timeline) return; state.tNow = Math.max(0, Math.floor(state.tNow - 1)); scrub.value = state.tNow; draw(); renderCircuit(); });
+    nextBtn.addEventListener('click', () => { if (!state.timeline) return; state.tNow = Math.min(parseFloat(scrub.max), Math.floor(state.tNow + 1)); scrub.value = state.tNow; draw(); renderCircuit(); });
+    scrub.addEventListener('input', () => { state.tNow = parseFloat(scrub.value||'0'); timeLabel.textContent = `t = ${state.tNow.toFixed(2)}`; draw(); renderCircuit(); });
+    speedInput.addEventListener('input', () => { state.speed = clamp(parseFloat(speedInput.value||'1'), 0.1, 5); speedInput.value = state.speed; });
+
+    labelsBtn.addEventListener('click', () => {
+      state.showLabels = !state.showLabels;
+      labelsBtn.textContent = `Node Labels: ${state.showLabels ? 'On' : 'Off'}`;
+      draw();
+    });
+
+    // Init
+    setCanvasSize(); state.graph = buildGraph(); draw();
+    modeBtn.textContent = `Placing Mode: ${state.placingMode ? 'On' : 'Off'}`;
+    setStatus('Ready — define ions on small edges or PZ tokens, then load a timeline or use demo. Use Placing Mode to add outer/inner PZs.');
+    requestAnimationFrame(raf);
+
+    // Circuit state (built from timeline.gates)
+    state.circuit = { qubits: [], wireIndex: new Map(), gatesByCol: new Map(), queueByQubit: new Map(), maxCol: 0 };
+    // Keep DOM refs for animation
+    state.circuit.dom = { squares: new Map(), conns: new Map() };
+
+    function normalizeQubitId(idStr) {
+      const s = String(idStr).trim().replace(/\$/g,'');
+      const m = s.match(/^q(?:_|\{)?(\d+)\}?$/i);
+      return m ? `$q_${m[1]}$` : String(idStr);
+    }
+    function parseGateQubits(q) {
+      if (Array.isArray(q)) return q.map(normalizeQubitId);
+      if (typeof q === 'string') return q.split(',').map(s => normalizeQubitId(s.trim())).filter(Boolean);
+      return [];
+    }
+    function collectAllQubitsFromTimeline(obj) {
+      const set = new Set();
+      const steps = Array.isArray(obj.timeline) ? obj.timeline : [];
+      for (const step of steps) {
+        if (Array.isArray(step.gates)) for (const g of step.gates) for (const q of parseGateQubits(g.qubits)) set.add(q);
+        if (Array.isArray(step.ions)) for (const ion of step.ions) set.add(normalizeQubitId(ion.id));
+      }
+      const arr = Array.from(set);
+      arr.sort((a,b)=>{
+        const na=a.match(/(\d+)/)?.[1], nb=b.match(/(\d+)/)?.[1];
+        return (na!=null && nb!=null) ? (Number(na)-Number(nb)) : a.localeCompare(b);
+      });
+      return arr;
+    }
+    function buildCircuitFromTimelineObject(obj) {
+      const steps = Array.isArray(obj.timeline) ? obj.timeline : [];
+      const qubits = collectAllQubitsFromTimeline(obj);
+      state.circuit.qubits = qubits;
+      state.circuit.wireIndex = new Map(qubits.map((q,i)=>[q,i]));
+      state.circuit.gatesByCol = new Map();
+      state.circuit.queueByQubit = new Map();
+      state.circuit.maxCol = 0;
+      for (const step of steps) {
+        const col = (typeof step.t === 'number') ? Math.floor(step.t) : 0;
+        const gs = Array.isArray(step.gates) ? step.gates : [];
+        for (const g of gs) {
+          const t0 = (typeof g.t0 === 'number') ? Math.floor(g.t0) : col; // prefer explicit start
+          const duration = Math.max(1, Number(g.duration || 1));
+          const pz = g.pz || null;
+          const gate = { id: String(g.id ?? ''), type: String(g.type ?? '').toUpperCase() || 'OP', qubits: parseGateQubits(g.qubits), t0, duration, pz, edgeEid: null };
+          try { const e = parseEdgeSpec(g.edge); if (e) { gate.edgeEid = e.id; gate.pzSide = e.side || null; } } catch {}
+          if (!state.circuit.gatesByCol.has(t0)) state.circuit.gatesByCol.set(t0, []);
+          state.circuit.gatesByCol.get(t0).push(gate);
+          // enqueue only once at start time
+          for (const q of gate.qubits) {
+            if (!state.circuit.queueByQubit.has(q)) state.circuit.queueByQubit.set(q, []);
+            state.circuit.queueByQubit.get(q).push({ id: gate.id, type: gate.type, t: t0, duration, qubits: gate.qubits, pz });
+          }
+          state.circuit.maxCol = Math.max(state.circuit.maxCol, t0 + duration - 1);
+        }
+      }
+      for (const [q, arr] of state.circuit.queueByQubit) arr.sort((a,b)=> (a.t - b.t) || a.id.localeCompare(b.id));
+    }
+
+    function renderCircuit() {
+      const svg = document.getElementById('qcSvg'); if (!svg) return;
+      // Ensure layers
+      let defs = svg.querySelector('#qcDefs');
+      if (!defs) {
+        defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
+        defs.setAttribute('id','qcDefs');
+        svg.insertBefore(defs, svg.firstChild);
+      }
+      const ensureGlow = (id, color) => {
+        let f = defs.querySelector(`#${id}`);
+        if (!f) {
+          f = document.createElementNS('http://www.w3.org/2000/svg','filter');
+          f.setAttribute('id', id);
+          f.setAttribute('x','-100%'); f.setAttribute('y','-100%'); f.setAttribute('width','300%'); f.setAttribute('height','300%');
+          const fe1 = document.createElementNS('http://www.w3.org/2000/svg','feDropShadow');
+          fe1.setAttribute('dx','0'); fe1.setAttribute('dy','0'); fe1.setAttribute('stdDeviation','4');
+          fe1.setAttribute('flood-color', color); fe1.setAttribute('flood-opacity','0.95');
+          const fe2 = document.createElementNS('http://www.w3.org/2000/svg','feDropShadow');
+          fe2.setAttribute('dx','0'); fe2.setAttribute('dy','0'); fe2.setAttribute('stdDeviation','8');
+          fe2.setAttribute('flood-color', color); fe2.setAttribute('flood-opacity','0.6');
+          f.appendChild(fe1); f.appendChild(fe2); defs.appendChild(f);
+        } else {
+          const fes = f.querySelectorAll('feDropShadow');
+          if (fes[0]) { fes[0].setAttribute('flood-color', color); }
+          if (fes[1]) { fes[1].setAttribute('flood-color', color); }
+        }
+      };
+      ensureGlow('glow-top',    PZ_COLORS.top);
+      ensureGlow('glow-right',  PZ_COLORS.right);
+      ensureGlow('glow-bottom', PZ_COLORS.bottom);
+      ensureGlow('glow-left',   PZ_COLORS.left);
+      ensureGlow('glow-default','#88aacc');
+
+      let bg = svg.querySelector('#qcBg'); if (!bg) { bg = document.createElementNS('http://www.w3.org/2000/svg','g'); bg.setAttribute('id','qcBg'); svg.appendChild(bg); }
+      let layer = svg.querySelector('#qcGates'); if (!layer) { layer = document.createElementNS('http://www.w3.org/2000/svg','g'); layer.setAttribute('id','qcGates'); svg.appendChild(layer); }
+      while (bg.firstChild) bg.removeChild(bg.firstChild);
+
+      const width  = svg.clientWidth  || 900;
+      const height = svg.clientHeight || 520;
+      const rows = state.circuit.qubits.length || 1;
+      const leftPad = 80, rightPad = 16, topPad = 28, bottomPad = 28;
+      const wireX1 = leftPad;
+      const wireX2 = width - rightPad;
+      const VISIBLE_LAYERS = 5; // t, t+1, ...
+      const colW = Math.max(90, (wireX2 - wireX1) / VISIBLE_LAYERS);
+      const rowH = rows > 1 ? (height - topPad - bottomPad) / (rows - 1) : (height - topPad - bottomPad);
+
+      const curT = Math.floor(state.tNow || 0);
+
+      // Background wires + labels
+      for (let i = 0; i < rows; i++) {
+        const y = topPad + (rows > 1 ? i * rowH : (topPad + rowH / 2));
+        const label = document.createElementNS('http://www.w3.org/2000/svg','text');
+        label.setAttribute('x','16'); label.setAttribute('y', String(y+5)); label.setAttribute('class','qc-qubit-label');
+        label.textContent = state.circuit.qubits[i] || `q_${i}`;
+        bg.appendChild(label);
+        const wire = document.createElementNS('http://www.w3.org/2000/svg','line');
+        wire.setAttribute('x1', String(wireX1)); wire.setAttribute('y1', String(y));
+        wire.setAttribute('x2', String(wireX2)); wire.setAttribute('y2', String(y));
+        wire.setAttribute('class','qc-wire');
+        bg.appendChild(wire);
+      }
+
+      const wantSquares = new Set();
+      const wantConns = new Set();
+
+      // Helper: color per PZ
+      const colorForSide = (side) => {
+        const s = (side||'').toString().toLowerCase();
+        if (s.includes('top')) return PZ_COLORS.top;
+        if (s.includes('right')) return PZ_COLORS.right;
+        if (s.includes('bottom')) return PZ_COLORS.bottom;
+        if (s.includes('left')) return PZ_COLORS.left;
+        return '#cfe6ff';
+      };
+      const filterForSide = (side) => {
+        const s = (side||'').toString().toLowerCase();
+        if (s.includes('top')) return 'url(#glow-top)';
+        if (s.includes('right')) return 'url(#glow-right)';
+        if (s.includes('bottom')) return 'url(#glow-bottom)';
+        if (s.includes('left')) return 'url(#glow-left)';
+        return 'url(#glow-default)';
+      };
+
+      // Iterate visible layers by time
+      for (let t = curT; t < curT + VISIBLE_LAYERS; t++) {
+        const k = t - curT;
+        const gx = wireX1 + k*colW + colW/2;
+
+        // Gather gates that should appear in this layer:
+        // - If k===0 (left-most), include any gate with t0 <= curT < t0+duration (ongoing gates stick here)
+        // - Else (future), include only gates with start time t0 === t
+        const gates = [];
+        for (const [t0, arr] of state.circuit.gatesByCol) {
+          if (k === 0) {
+            for (const g of arr) if (curT >= g.t0 && curT < g.t0 + g.duration) gates.push(g);
+          } else if (t0 === t) {
+            for (const g of arr) gates.push(g);
+          }
+        }
+
+        for (const g of gates) {
+          const qIdxs = (g.qubits || []).map(q => state.circuit.wireIndex.get(q)).filter(i => i != null).sort((a,b)=>a-b);
+          if (qIdxs.length === 0) continue;
+          const isActive = (curT >= g.t0 && curT < g.t0 + g.duration);
+          const side = g.pzSide || (g.pz || '').toLowerCase();
+          const fillColor = colorForSide(side);
+          const glowFilter = filterForSide(side);
+
+          // Squares per involved qubit
+          for (const q of g.qubits) {
+            const rowIdx = state.circuit.wireIndex.get(q); if (rowIdx == null) continue;
+            const y = topPad + (rows > 1 ? rowIdx*rowH : (topPad + rowH / 2));
+            const keyS = `${g.id}|${g.t0}|${q}`; // stable across duration
+            wantSquares.add(keyS);
+            let grp = state.circuit.dom.squares.get(keyS);
+            if (!grp) {
+              grp = document.createElementNS('http://www.w3.org/2000/svg','g');
+              grp.setAttribute('class','qc-anim');
+              const rect = document.createElementNS('http://www.w3.org/2000/svg','rect');
+              rect.setAttribute('x','-10'); rect.setAttribute('y','-10'); rect.setAttribute('width','20'); rect.setAttribute('height','20'); rect.setAttribute('class','qc-gate');
+              grp.appendChild(rect);
+              layer.appendChild(grp);
+              state.circuit.dom.squares.set(keyS, grp);
+            }
+            grp.setAttribute('transform', `translate(${gx},${y})`);
+            const rectEl = grp.querySelector('rect');
+            rectEl.setAttribute('class', `qc-gate ${isActive ? 'executing' : ''}`);
+            rectEl.setAttribute('fill', isActive ? fillColor : '#000');
+            rectEl.setAttribute('stroke', isActive ? fillColor : '#fff');
+            if (isActive) rectEl.setAttribute('filter', glowFilter); else rectEl.removeAttribute('filter');
+          }
+
+          // Connector for multi-qubit
+          if (qIdxs.length >= 2) {
+            const keyC = `${g.id}|${g.t0}|${g.qubits.join(',')}`;
+            wantConns.add(keyC);
+            const ys = qIdxs.map(idx => topPad + (rows > 1 ? idx*rowH : (topPad + rowH / 2)));
+            let cg = state.circuit.dom.conns.get(keyC);
+            if (!cg) {
+              cg = document.createElementNS('http://www.w3.org/2000/svg','g');
+              cg.setAttribute('class','qc-anim');
+              const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+              line.setAttribute('class','qc-connector'); line.setAttribute('x1','0'); line.setAttribute('x2','0');
+              cg.appendChild(line);
+              const lbl = document.createElementNS('http://www.w3.org/2000/svg','text');
+              lbl.setAttribute('text-anchor','middle'); lbl.setAttribute('class','qc-gate-text');
+              cg.appendChild(lbl);
+              svg.insertBefore(cg, layer);
+              state.circuit.dom.conns.set(keyC, cg);
+            }
+            cg.setAttribute('transform', `translate(${gx},0)`);
+            const yTop = Math.min(...ys), yBot = Math.max(...ys);
+            const lineEl = cg.querySelector('line');
+            lineEl.setAttribute('y1', String(yTop)); lineEl.setAttribute('y2', String(yBot));
+            lineEl.setAttribute('stroke', isActive ? fillColor : '#fff');
+            if (isActive) lineEl.setAttribute('filter', glowFilter); else lineEl.removeAttribute('filter');
+            const lblEl = cg.querySelector('text');
+            lblEl.setAttribute('x','0'); lblEl.setAttribute('y', String((yTop + yBot)/2 + 5));
+            lblEl.setAttribute('fill', isActive ? fillColor : '#e5f2ff');
+            if (isActive) lblEl.setAttribute('filter', glowFilter); else lblEl.removeAttribute('filter');
+            lblEl.textContent = g.type || 'OP';
+          }
+        }
+      }
+
+      // Cleanup
+      for (const [key, elem] of state.circuit.dom.conns) {
+        if (!wantConns.has(key)) { if (elem && elem.parentNode) elem.parentNode.removeChild(elem); state.circuit.dom.conns.delete(key); }
+      }
+      for (const [key, elem] of state.circuit.dom.squares) {
+        if (!wantSquares.has(key)) { if (elem && elem.parentNode) elem.parentNode.removeChild(elem); state.circuit.dom.squares.delete(key); }
+      }
+    }
+
+    // After the loader is defined, wrap it to build circuit too
+    const originalLoadTimelineFromObject = loadTimelineFromObject;
+    loadTimelineFromObject = function(obj) {
+      originalLoadTimelineFromObject(obj);
+      buildCircuitFromTimelineObject(obj);
+      renderCircuit();
+    };
+
+    // Ensure initial QC render
+    renderCircuit();
+  </script>
+</body>
+</html>

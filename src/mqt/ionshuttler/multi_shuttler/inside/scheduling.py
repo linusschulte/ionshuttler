@@ -26,6 +26,8 @@ if TYPE_CHECKING:
     from .processing_zone import ProcessingZone
     from .types import Edge, Node
 
+JUNCTION_CAPACITY = 1
+
 DEBUG_FLAG = bool(int(os.getenv("IONSHUTTLER_DEBUG_SCHEDULING", "0")))
 
 
@@ -359,6 +361,10 @@ def rotate(graph: Graph, ion: int, cycle_idcs: list[Edge]) -> None:
     first = True
     ions_already_moved_this_timestep = []
     ions_being_skipped = []
+
+    if DEBUG_FLAG:
+        print("MOVE:", ion, cycle_idcs)
+
     for current_edge, new_edge in pairwise(cycle_idcs):
         current_node1, current_node2 = tuple(sorted(current_edge, key=sum))
         current_edge_ = (current_node1, current_node2)
@@ -374,6 +380,9 @@ def rotate(graph: Graph, ion: int, cycle_idcs: list[Edge]) -> None:
         #        current_ion = current_ion_[0]
 
         ions_on_edge = state_dict.get(current_edge_) or []
+        moved_on_edge = 0
+
+        
 
         for current_ion in ions_on_edge:
             # if ion already rotated via previous cycle
@@ -390,25 +399,31 @@ def rotate(graph: Graph, ion: int, cycle_idcs: list[Edge]) -> None:
             ):  # and not ion in pz and needed in 2-qubit gate
                 edge_type = graph.get_edge_data(*current_edge_).get("edge_type", "trap")
                 max_pz_capacity = graph.max_ions_per_pz
-                if DEBUG_FLAG:
-                    print("MOVE:", ion, cycle_idcs)
-                    print(f"Rotating ion {current_ion} from {current_edge_} to {new_edge_}")
-                    print(graph.edges[current_edge_]["ions"], "-> ", graph.edges[new_edge_]["ions"])
                 # Don't evict bystanders from a processing zone while there is still free capacity.
                 if (
                     (edge_type == "processing"
                     and current_ion != ion
-                    and len(graph.edges[current_edge_]["ions"]) < max_pz_capacity)
+                    and len(graph.edges[current_edge_]["ions"]) <= max_pz_capacity)
                     or (current_ion in ions_being_skipped)
                 ):
+                    
                     if DEBUG_FLAG and not (current_ion in ions_being_skipped):
                         print(f"Skipping moving bystander ion {current_ion} from moving out of pz {current_edge_} for the rest of the rotation due to sufficient space in pz.")
                     ions_being_skipped.append(current_ion)
                     continue
+
+                if moved_on_edge >= JUNCTION_CAPACITY:
+                    continue
+
+                if DEBUG_FLAG:
+                    print(f"Rotating ion {current_ion} from {current_edge_} to {new_edge_}")
+                    print("Check", len(graph.edges[current_edge_]["ions"]), "vs" , max_pz_capacity)
+                    print(graph.edges[current_edge_]["ions"], "-> ", graph.edges[new_edge_]["ions"])
                 
                 #print("Before rotation:")
                 graph.edges[current_edge_]["ions"].remove(current_ion)
                 graph.edges[new_edge_]["ions"].append(current_ion)
+                moved_on_edge += 1
                 #print("After rotation:")
                 #print(graph.edges[current_edge_]["ions"], "-> ", graph.edges[new_edge_]["ions"])
                 #print(f"Rotated ion {current_ion} from {current_edge} to {new_edge}")

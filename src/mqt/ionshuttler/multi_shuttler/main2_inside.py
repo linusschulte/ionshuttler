@@ -330,6 +330,8 @@ def main(config: dict[str, Any]):
     gate_assignment: dict[int, str] = {}
     partition_result: object | None = None
     partition_param_trials: list[dict[str, object]] | None = None
+    gate_count_1q = sum(1 for info in graph.gate_info.values() if len(info.qubits) == 1)
+    gate_count_2q = sum(1 for info in graph.gate_info.values() if len(info.qubits) == 2)
     
     if gate_partition_cfg:
         gate_partition_for_run = {}
@@ -513,17 +515,11 @@ def main(config: dict[str, Any]):
         shuttle_mod.plot_state = _patched_plot_state
         graph.plot = True
 
-    print("\nStarted inside shuttling simulation...")
-    #final_timesteps = run_shuttle_main(graph, graph.sequence.copy(), cycle_or_paths_str)
-    final_timesteps = run_shuttle_main(
-        graph,
-        cycle_or_paths_str,
-        max_timesteps=max_timesteps,
-    )
-    cpu_time = datetime.now() - start_time
-    if timeline_output:
+    def _write_timeline_snapshot(interrupted: bool) -> None:
+        if not timeline_output:
+            return
         algo = str(gate_partition_algorithm_cfg["name"]) if gate_partition_algorithm_cfg is not None else "none"
-        timeline_output = timeline_output + "_" + algorithm_name + "_" + algo + ".json"
+        out_name = timeline_output + "_" + algorithm_name + "_" + algo + ".json"
         pzs_payload = {pz.name: _edge_to_strings(pz.edge_idc) for pz in graph.pzs}
         inner_pz_edges = [_edge_to_strings(pz.edge_idc) for pz in graph.pzs]
         architecture = {
@@ -539,11 +535,30 @@ def main(config: dict[str, Any]):
             "pzs": architecture["pzs"],
             "innerPZEdges": architecture["innerPZEdges"],
             "timeline": timeline_frames,
+            "interrupted": interrupted,
         }
-        out_path = pathlib.Path(timeline_output)
+        out_path = pathlib.Path(out_name)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(payload, separators=(",", ":")))
-        print(f"Wrote timeline JSON to {out_path} ({len(timeline_frames)} frames).")
+        state = "partial" if interrupted else "complete"
+        print(f"Wrote {state} timeline JSON to {out_path} ({len(timeline_frames)} frames).")
+
+    print("\nStarted inside shuttling simulation...")
+    #final_timesteps = run_shuttle_main(graph, graph.sequence.copy(), cycle_or_paths_str)
+    interrupted = False
+    try:
+        final_timesteps = run_shuttle_main(
+            graph,
+            cycle_or_paths_str,
+            max_timesteps=max_timesteps,
+        )
+    except KeyboardInterrupt:
+        interrupted = True
+        final_timesteps = -1
+        raise
+    finally:
+        _write_timeline_snapshot(interrupted)
+    cpu_time = datetime.now() - start_time
 
     cost_before = getattr(partition_result, "cost_before", None)
     cost_after = getattr(partition_result, "cost_after", None)
@@ -562,6 +577,8 @@ def main(config: dict[str, Any]):
         qubit_assignments,
         move_distance_total,
         partition_param_trials,
+        gate_count_1q,
+        gate_count_2q,
     )
 
 
@@ -577,6 +594,8 @@ def execute_run(
     list[list[int]],
     float | None,
     list[dict[str, object]] | None,
+    int,
+    int,
 ]:
     config_for_run = config.copy()
     if config_for_run.get("max_timesteps") is None and config_for_run.get("max_timesteps_factor") is not None:
@@ -588,7 +607,7 @@ def execute_run(
     if should_use_legacy_cli(config_for_run):
         print("Using legacy CLI entrypoint (mqt-ionshuttler-heuristic) for this configuration.")
         final_ts, cpu_time = run_legacy_cli_with_config(config_for_run)
-        return final_ts, cpu_time, 0, None, None, [], [], None, None
+        return final_ts, cpu_time, 0, None, None, [], [], None, None, 0, 0
     return main(config_for_run)
 
     # # --- Benchmarking Output ---
@@ -787,9 +806,9 @@ if __name__ == "__main__":
         #"algorithm_name": ["random_nativegates_quantinuum_qiskit_opt2"],
         # Core architecture parameters
         'num_ions': [20,30,40],
-        'num_pzs': [10],
+        'num_pzs': [8],
         'ions_per_pz': [3],
-        'grid_size': [5],
+        'grid_size': [4],
         'mz_trap_size': [1],
         #'pz_numbers_to_use': [[1,9,6,3,11,8]], 
         'use_dag': [False],
@@ -1063,6 +1082,8 @@ if __name__ == "__main__":
                         qubit_assignments,
                         move_distance_total,
                         partition_param_trials,
+                        gate_count_1q,
+                        gate_count_2q,
                     ) = execute_run(config)
 
                     print("move_distance_total:", move_distance_total)
@@ -1080,6 +1101,8 @@ if __name__ == "__main__":
                     run_group.attrs['timesteps_lower_bound'] = timesteps_lower_bound
                     run_group.attrs['cost_before'] = cost_before if cost_before is not None else np.nan
                     run_group.attrs['cost_after'] = cost_after if cost_after is not None else np.nan
+                    run_group.attrs['gate_count_1q'] = int(gate_count_1q)
+                    run_group.attrs['gate_count_2q'] = int(gate_count_2q)
                     if time_slices_info:
                         _write_json_dataset(run_group, "time_slices", time_slices_info)
                     if qubit_assignments:
