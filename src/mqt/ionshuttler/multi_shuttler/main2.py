@@ -32,8 +32,7 @@ from outside.compilation import (
 )
 from outside.cycles import create_starting_config, get_ions
 from outside.graph_creator import GraphCreator, PZCreator
-from outside.partition import 
-
+from outside.partition import get_partition
 from outside.processing_zone import ProcessingZone
 from outside.shuttle import main as run_shuttle_main
 from outside.partition import parse_qasm_to_qiskit
@@ -310,6 +309,8 @@ def main(config: dict[str, Any]):
     gate_assignment: dict[int, str] = {}
     seq_length = len(graph.sequence)
     partition_result: object | None = None
+    gate_count_1q = sum(1 for info in graph.gate_info.values() if len(info.qubits) == 1)
+    gate_count_2q = sum(1 for info in graph.gate_info.values() if len(info.qubits) == 2)
     
     if PRINT_DEBUG:
         print(f"Number of ions: {num_ions}")
@@ -659,6 +660,8 @@ def main(config: dict[str, Any]):
         qubit_assignments,
         move_distance_total,
         partition_param_trials if 'partition_param_trials' in locals() else None,
+        gate_count_1q,
+        gate_count_2q,
     )
 
 
@@ -673,6 +676,9 @@ def execute_run(
     list[list[int]],
     list[list[int]],
     float | None,
+    list[dict[str, object]] | None,
+    int,
+    int,
 ]:
     config_for_run = config.copy()
     if config_for_run.get("max_timesteps") is None and config_for_run.get("max_timesteps_factor") is not None:
@@ -684,7 +690,7 @@ def execute_run(
     if should_use_legacy_cli(config_for_run):
         print("Using legacy CLI entrypoint (mqt-ionshuttler-heuristic) for this configuration.")
         final_ts, cpu_time = run_legacy_cli_with_config(config_for_run)
-        return final_ts, cpu_time, 0, None, None, [], [], None
+        return final_ts, cpu_time, 0, None, None, [], [], None, None, 0, 0
     return main(config_for_run)
 
     # # --- Benchmarking Output ---
@@ -795,11 +801,6 @@ if __name__ == "__main__":
     #################################################################################################################
     # Meta study configuration
     plot_move_hist = False
-    clear_prev = False
-    #unique_id = "generated_0.71_0.7_num_ions_4pzs"
-    #unique_id = "balance_distance_sweep_20ions_4pzs"
-    #unique_id = "num_pzs_mean_std_allswept_4pzs"
-    unique_id = "fgp_tabu_global_benchmark_2pzs_6perpz_WITHDAG"
 
     # Declare partitioning algorithm parameters
     fgp_tabu = {
@@ -820,7 +821,7 @@ if __name__ == "__main__":
         'params': {
             'balance_penalty': [5], #np.linspace(0.1, 5, 40),  #[0.6],
             'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
-            'max_iterations_factor': [100], #list(range(0, 500+1, 100)),
+            'max_iterations_factor': [70], #list(range(0, 500+1, 100)),
             #'tabu_list_length': [200],
             'seed': range(1),
             'candidate_list_length': [None],
@@ -882,13 +883,13 @@ if __name__ == "__main__":
         "algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2", "qaoa_nativegates_quantinuum_opt2", "qpeexact_nativegates_quantinuum_qiskit_opt2", "random_nativegates_quantinuum_qiskit_opt2"],
         #"algorithm_name": ["random_nativegates_quantinuum_qiskit_opt2"],
         # Core architecture parameters
-        'num_ions': [20,30,40,50],
+        'num_ions': [10,30,60],
         'num_pzs': [2],
-        'ions_per_pz': [6],
+        'ions_per_pz': [8],
         'grid_size': [4],
         'mz_trap_size': [3],
         #'pz_numbers_to_use': [[1,9,6,3,11,8]], 
-        'use_dag': [True],
+        'use_dag': [False],
         'enforce_slice_plan': [False],
         'enable_memory_zone_manager': [False],
         'save' : [False],
@@ -911,6 +912,10 @@ if __name__ == "__main__":
             #rehome
         ]
     }
+    dag_string = "WITHDAG" if True in meta_study_config.get("use_dag", []) else "NODAG"
+    unique_id = f"fgp_tabu_global_benchmark"
+    unique_id += f"_{str(meta_study_config['num_pzs'])}pzs_{str(meta_study_config['ions_per_pz'])}perpz_{dag_string}"
+    clear_prev = False
 
     if unique_id != "":
         #stamp = datetime.now().strftime("%Y%m%d_%H")
@@ -1155,6 +1160,8 @@ if __name__ == "__main__":
                         qubit_assignments,
                         move_distance_total,
                         partition_param_trials,
+                        gate_count_1q,
+                        gate_count_2q,
                     ) = execute_run(config)
 
                     print("move_distance_total:", move_distance_total)
@@ -1172,6 +1179,8 @@ if __name__ == "__main__":
                     run_group.attrs['timesteps_lower_bound'] = timesteps_lower_bound
                     run_group.attrs['cost_before'] = cost_before if cost_before is not None else np.nan
                     run_group.attrs['cost_after'] = cost_after if cost_after is not None else np.nan
+                    run_group.attrs['gate_count_1q'] = int(gate_count_1q)
+                    run_group.attrs['gate_count_2q'] = int(gate_count_2q)
                     if time_slices_info:
                         _write_json_dataset(run_group, "time_slices", time_slices_info)
                     if qubit_assignments:

@@ -807,7 +807,7 @@ if __name__ == "__main__":
         # Core architecture parameters
         'num_ions': [20,30,40],
         'num_pzs': [8],
-        'ions_per_pz': [3],
+        'ions_per_pz': [2],
         'grid_size': [4],
         'mz_trap_size': [1],
         #'pz_numbers_to_use': [[1,9,6,3,11,8]], 
@@ -834,7 +834,7 @@ if __name__ == "__main__":
             #rehome
         ]
     }
-    dag_string = "WITHDAG" if meta_study_config.get("use_dag", False) else "NODAG"
+    dag_string = "WITHDAG" if True in meta_study_config.get("use_dag", []) else "NODAG"
     unique_id = f"INSIDE_fgp_tabu_global_benchmark"
     unique_id += f"_{str(meta_study_config['num_pzs'])}pzs_{str(meta_study_config['ions_per_pz'])}perpz_{dag_string}"
     clear_prev = False
