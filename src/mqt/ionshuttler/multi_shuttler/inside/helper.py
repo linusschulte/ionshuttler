@@ -15,10 +15,10 @@ def _boundary_edge_candidates(m: int, n: int, v: int, h: int) -> list[Edge]:
 
     # Corner-adjacent boundary edges, used first.
     prioritized: list[Edge] = [
-        ((0, offset), (0, 1+offset)),
-        ((max_row, max_col-offset), (max_row, max_col - 1 -offset)),
-        ((offset, max_col), (1+offset, max_col)),
-        ((max_row-offset, 0), (max_row - 1-offset, 0)),
+        ((0, offset*h), (0, (1+offset)*h)),
+        ((max_row, max_col-offset*h), (max_row, max_col - (1 +offset)*h)),
+        ((offset*v, max_col), ((v+offset)*v, max_col)),
+        ((max_row-offset*v, 0), (max_row-(1+offset)*v, 0)),
     ]
 
     # Deterministic fallback pool if more than four PZs are requested.
@@ -77,18 +77,47 @@ def _all_line_balanced_candidates(m: int, n: int, v: int, h: int) -> list[Edge]:
     return [*horizontals, *verticals]
 
 
-def generate_pzs(num_pzs: int, m: int, n: int, v: int, h: int) -> dict[str, ProcessingZone]:
+def _normalize_edge(edge: Edge) -> Edge:
+    node_a, node_b = edge
+    return (node_a, node_b) if node_a <= node_b else (node_b, node_a)
+
+
+def _coerce_node(node: tuple[int, int] | list[int]) -> tuple[int, int]:
+    x, y = node
+    return (int(x), int(y))
+
+
+def _coerce_edge(edge: Edge | list[list[int]] | list[tuple[int, int]] | tuple[list[int], list[int]]) -> Edge:
+    node_a, node_b = edge
+    return (_coerce_node(node_a), _coerce_node(node_b))
+
+
+def generate_pzs(
+    num_pzs: int,
+    m: int,
+    n: int,
+    v: int,
+    h: int,
+    pz_edges: list[Edge] | None = None,
+) -> dict[str, ProcessingZone]:
     if num_pzs < 1:
         msg = "num_pzs must be >= 1."
         raise ValueError(msg)
 
-    if num_pzs <= 4:
-        candidates = _boundary_edge_candidates(m, n, v, h)
+    if pz_edges is not None:
+        if not pz_edges:
+            msg = "pz_edges must contain at least one edge."
+            raise ValueError(msg)
+        candidates = [_normalize_edge(_coerce_edge(edge)) for edge in pz_edges]
+        num_pzs = len(candidates)
     else:
-        candidates = _all_line_balanced_candidates(m, n, v, h)
-    if num_pzs > len(candidates):
-        msg = f"Requested {num_pzs} PZs, but only {len(candidates)} candidate edges are available."
-        raise ValueError(msg)
+        if num_pzs <= 4:
+            candidates = _boundary_edge_candidates(m, n, v, h)
+        else:
+            candidates = _all_line_balanced_candidates(m, n, v, h)
+        if num_pzs > len(candidates):
+            msg = f"Requested {num_pzs} PZs, but only {len(candidates)} candidate edges are available."
+            raise ValueError(msg)
 
     pz_definitions: dict[str, ProcessingZone] = {}
     for idx, edge in enumerate(candidates[:num_pzs], start=1):

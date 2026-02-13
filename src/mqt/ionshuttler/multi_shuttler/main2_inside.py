@@ -233,7 +233,14 @@ def main(config: dict[str, Any]):
 
     max_timesteps = _resolve_max_timesteps(config, num_ions)
 
-    pz_definitions = generate_pzs(num_pzs=num_pzs_config, m=m, n=n, v=v, h=h)
+    pz_definitions = generate_pzs(
+        num_pzs=num_pzs_config,
+        m=m,
+        n=n,
+        v=v,
+        h=h,
+        pz_edges=config.get("pz_edges"),
+    )
     available_pz_names = list(pz_definitions.keys())
     pz_names_to_use = [f"pz{pz}" for pz in config.get("pz_numbers_to_use", range(1, num_pzs_config + 1))]
     if not all(name in available_pz_names for name in pz_names_to_use):
@@ -244,7 +251,16 @@ def main(config: dict[str, Any]):
         msg = "No processing zones selected."
         raise ValueError(msg)
 
-    graph_creator = GraphCreator(m, n, v, h, failing_junctions, pzs_to_use)
+    graph_creator = GraphCreator(
+        m,
+        n,
+        v,
+        h,
+        failing_junctions,
+        pzs_to_use,
+        edges_to_delete=config.get("edges_to_delete"),
+        nodes_to_suppress=config.get("nodes_to_suppress"),
+    )
     graph = graph_creator.get_graph()
 
     def _normalize_edge(edge: tuple[tuple[int, int], tuple[int, int]]) -> tuple[tuple[int, int], tuple[int, int]]:
@@ -522,11 +538,26 @@ def main(config: dict[str, Any]):
         out_name = timeline_output + "_" + algorithm_name + "_" + algo + ".json"
         pzs_payload = {pz.name: _edge_to_strings(pz.edge_idc) for pz in graph.pzs}
         inner_pz_edges = [_edge_to_strings(pz.edge_idc) for pz in graph.pzs]
+        removed_edges_cfg = config.get("edges_to_delete") or []
+        suppressed_nodes_cfg = config.get("nodes_to_suppress") or []
+
+        def _coerce_node(node: Any) -> tuple[int, int]:
+            x, y = node
+            return (int(x), int(y))
+
+        def _coerce_edge(edge: Any) -> tuple[tuple[int, int], tuple[int, int]]:
+            node_a, node_b = edge
+            return (_coerce_node(node_a), _coerce_node(node_b))
+
+        removed_edges_payload = [_edge_to_strings(_coerce_edge(edge)) for edge in removed_edges_cfg]
+        suppressed_nodes_payload = [_format_site(_coerce_node(node)) for node in suppressed_nodes_cfg]
         architecture = {
             "grid": {"rows": m, "cols": n},
             "sites": {"vertical": v, "horizontal": h},
             "pzs": pzs_payload,
             "innerPZEdges": inner_pz_edges,
+            "removedEdges": removed_edges_payload,
+            "suppressedNodes": suppressed_nodes_payload,
         }
         payload = {
             "architecture": architecture,
@@ -534,6 +565,8 @@ def main(config: dict[str, Any]):
             "sites": architecture["sites"],
             "pzs": architecture["pzs"],
             "innerPZEdges": architecture["innerPZEdges"],
+            "removedEdges": architecture["removedEdges"],
+            "suppressedNodes": architecture["suppressedNodes"],
             "timeline": timeline_frames,
             "interrupted": interrupted,
         }
@@ -741,9 +774,9 @@ if __name__ == "__main__":
     fgp_tabu_global = {
         'name': 'fgp_tabu_global',
         'params': {
-            'balance_penalty': [5], #np.linspace(0.1, 5, 40),  #[0.6],
+            'balance_penalty': [1], #np.linspace(0.1, 5, 40),  #[0.6],
             'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
-            'max_iterations_factor': [100], #list(range(0, 500+1, 100)),
+            'max_iterations_factor': [50,100,200], 
             #'tabu_list_length': [200],
             'seed': range(1),
             'candidate_list_length': [None],
@@ -805,7 +838,7 @@ if __name__ == "__main__":
         "algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2", "qaoa_nativegates_quantinuum_opt2", "qpeexact_nativegates_quantinuum_qiskit_opt2", "random_nativegates_quantinuum_qiskit_opt2"],
         #"algorithm_name": ["random_nativegates_quantinuum_qiskit_opt2"],
         # Core architecture parameters
-        'num_ions': [20,30,40],
+        'num_ions': [20],#[10,30,60],
         'num_pzs': [8],
         'ions_per_pz': [2],
         'grid_size': [4],
@@ -820,10 +853,10 @@ if __name__ == "__main__":
         #'gate_density': [(0.5,0.5)],
         #'gate_density': [(0.0,1.0), (0.1,0.9), (0.2,0.8), (0.3,0.7), (0.4,0.6), (0.5,0.5), (0.6,0.4), (0.7,0.3), (0.8,0.2), (0.9,0.1), (1.0,0.0)],
         #'gate_density': [(0.1,0.1), (0.25,0.25), (0.5,0.5), (0.75, 0.75), (1.0, 1.0)], 
-
+        
         # Partitioning algorithm configurations
         'partitioning_algorithms': [
-            {'name': 'none'},  # No partitioning
+            #{'name': 'none'},  # No partitioning
             #fgp_tabu,
             fgp_tabu_global,
             #fgp_tabu_global_mini,
