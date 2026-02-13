@@ -363,7 +363,7 @@ def rotate(graph: Graph, ion: int, cycle_idcs: list[Edge]) -> None:
     ions_being_skipped = []
 
     if DEBUG_FLAG:
-        print("MOVE:", ion, cycle_idcs)
+        print("MOVE:", ion, "starting edge:", graph.state[ion], ":", state_dict.get(graph.state[ion]))
 
     for current_edge, new_edge in pairwise(cycle_idcs):
         current_node1, current_node2 = tuple(sorted(current_edge, key=sum))
@@ -382,17 +382,19 @@ def rotate(graph: Graph, ion: int, cycle_idcs: list[Edge]) -> None:
         ions_on_edge = state_dict.get(current_edge_) or []
         moved_on_edge = 0
 
-        
+        ions_to_remove = []
 
         for current_ion in ions_on_edge:
             # if ion already rotated via previous cycle
             # (now checks directly in state_dict, in case two ions on one edge)
             if first and ion not in state_dict[current_edge_]:  # current_ion != ion:
-                # print(f"Ion {ion} already rotated via previous cycle")
+                if DEBUG_FLAG:
+                    print(f"Ion {ion} already rotated via previous cycle")
                 return
             first = False
             if current_ion in graph.in_process:
-                # print(f"didn't rotate {current_ion}")
+                if DEBUG_FLAG:  
+                    print(f"didn't rotate {current_ion}, since it is in graph.in_progress")
                 pass
             if (
                 current_ion not in ions_already_moved_this_timestep and current_ion not in graph.in_process
@@ -413,15 +415,16 @@ def rotate(graph: Graph, ion: int, cycle_idcs: list[Edge]) -> None:
                     continue
 
                 if moved_on_edge >= JUNCTION_CAPACITY:
+                    if DEBUG_FLAG:
+                        print(f"Reached JUNCTION_CAPACITY {JUNCTION_CAPACITY} for edge {current_edge_}")
                     continue
 
                 if DEBUG_FLAG:
-                    print(f"Rotating ion {current_ion} from {current_edge_} to {new_edge_}")
-                    print("Check", len(graph.edges[current_edge_]["ions"]), "vs" , max_pz_capacity)
-                    print(graph.edges[current_edge_]["ions"], "-> ", graph.edges[new_edge_]["ions"])
-                
+                    print(f"Rotating ion {current_ion} from {current_edge_} to {new_edge_}", "   ", graph.edges[current_edge_]["ions"], "-> ", graph.edges[new_edge_]["ions"])
+                    #print("Check", len(graph.edges[current_edge_]["ions"]), "vs" , max_pz_capacity)
+
                 #print("Before rotation:")
-                graph.edges[current_edge_]["ions"].remove(current_ion)
+                ions_to_remove.append(current_ion)
                 graph.edges[new_edge_]["ions"].append(current_ion)
                 moved_on_edge += 1
                 #print("After rotation:")
@@ -430,6 +433,8 @@ def rotate(graph: Graph, ion: int, cycle_idcs: list[Edge]) -> None:
 
                 # remember ion so it doesn't move with the next edge too / so each ion only rotates once
                 ions_already_moved_this_timestep.append(current_ion)
+            
+            graph.edges[current_edge_]["ions"] = [ion for ion in graph.edges[current_edge_]["ions"] if ion not in ions_to_remove]
 
 
 def rotate_free_cycles(graph: Graph, all_cycles: dict[int, list[Edge]], free_cycles_idxs: list[int]) -> None:

@@ -69,8 +69,15 @@ def shuttle(
         if len(ions_at_pz) >= graph.max_ions_per_pz:
             #ion1, ion2 = ions_at_pz
             for ion in ions_at_pz:
+                if any([ion in gate_info_list[other_pz.name] for other_pz in graph.pzs if other_pz != pz]):
+                    # First, check if there is a particular ion that we need for a gate elsewhere. If so, make that one ready for move.
+                    graph[pz.edge_idc[0]][pz.edge_idc[1]]["ions"].remove(ion)
+                    graph[pz.edge_idc[0]][pz.edge_idc[1]]["ions"].insert(0, ion)
+                    if DEBUG_FLAG:
+                        print(f"swapped ion {ion} within pz to allow move to other pz. Before {ions_at_pz} now: {graph[pz.edge_idc[0]][pz.edge_idc[1]]['ions']}")
+                    break
                 if ion not in gate_info_list[pz.name]:
-                    # ion not needed in this pz, will be swapped out
+                    # Otherwise, find the next best ion that is not actively needed in this pz that will be moved out to make space
                     graph[pz.edge_idc[0]][pz.edge_idc[1]]["ions"].remove(ion)
                     graph[pz.edge_idc[0]][pz.edge_idc[1]]["ions"].insert(0, ion)
                     if DEBUG_FLAG:
@@ -251,6 +258,8 @@ def main(graph: Graph, cycle_or_paths: str, max_timesteps: int | None = None) ->
             ion_processed = False
             if DEBUG_FLAG:
                 print(f"---> checking out gate {i}: {gate_id} {qubits}")
+                if graph.gate_pz_assignment:
+                    print(f"   ---> gate {gate_id} assigned to {graph.gate_pz_assignment[gate_id]}")
             # wenn auf weg zu pz in anderer pz -> wird processed?
             # Problem nur für 2-qubit gate? -> TODO fix
             for pz in pzs:
