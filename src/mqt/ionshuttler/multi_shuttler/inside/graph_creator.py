@@ -50,9 +50,9 @@ class GraphCreator:
         #     self._remove_mid_part(networkx_graph)
         self._remove_junctions(networkx_graph, self.failing_junctions)
         nx.set_edge_attributes(networkx_graph, values=dict.fromkeys(networkx_graph.edges(), "trap"), name="edge_type")
-        self._set_processing_zone_edges(networkx_graph)
         self._delete_edges(networkx_graph)
         self._suppress_nodes(networkx_graph)
+        self._set_processing_zone_edges(networkx_graph)
         nx.set_node_attributes(networkx_graph, values=dict.fromkeys(networkx_graph.nodes(), 1), name="weight")
 
         return networkx_graph
@@ -150,6 +150,18 @@ class GraphCreator:
             if not values:
                 continue
 
+            if key == "edge_type" and "processing" in values:
+                merged[key] = "processing"
+                continue
+
+            if key == "pz_name":
+                merged[key] = values[0]
+                continue
+
+            if key == "color" and "g" in values:
+                merged[key] = "g"
+                continue
+
             if all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in values):
                 merged[key] = sum(values) / len(values)
                 continue
@@ -194,6 +206,7 @@ class GraphCreator:
             if networkx_graph.has_edge(*edge):
                 networkx_graph.edges[edge]["edge_type"] = "processing"
                 networkx_graph.edges[edge]["color"] = "g"
+                networkx_graph.edges[edge]["pz_name"] = pz.name
 
     def get_graph(self) -> Graph:
         return self.networkx_graph

@@ -61,11 +61,13 @@ def plot_state(
 
     for edge in graph.edges:
         if edge in ion_holder:
+            first_ion = ion_holder[edge][0]
+            color_idx = first_ion % len(colors) if colors else 0
             graph.add_edge(
                 edge[0],
                 edge[1],
                 ions=ion_holder[edge],
-                color=colors[ion_holder[edge][0]],
+                color=colors[color_idx],
             )
 
     if plot_cycle is not False:

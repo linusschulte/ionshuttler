@@ -280,6 +280,7 @@
       pzPlacementType: null, // null | 'outer' | 'inner'
       innerPZKeys: new Set(), // set of edge keys for grid_* segments
       innerPZLabels: new Map(), // edge key -> label (e.g., pz1)
+      innerPZSpecs: [], // [{ spec, label }]
       removedEdgeSpecs: [],
       suppressedNodeSpecs: [],
       gridRect: { x: 80, y: 80, w: 600, h: 600 },
@@ -422,20 +423,35 @@
         ctx.fillText(text, x, y);
       };
 
-      const junctions = listJunctions();
-      for (const p of junctions) {
-        const label = labelForJunction_Integer(p.r, p.c);
-        drawTextWithHalo(label, p.x, p.y + 6);
-      }
+      if (state.graph) {
+        for (const n of state.graph.nodes) {
+          if (n.kind === 'junction') {
+            const label = labelForJunction_Integer(n.r, n.c);
+            drawTextWithHalo(label, n.x, n.y + 6);
+          } else if (n.kind === 'site_v') {
+            const label = labelForVerticalSite_Integer(n.r, n.c, n.i);
+            drawTextWithHalo(label, n.x, n.y + 4);
+          } else if (n.kind === 'site_h') {
+            const label = labelForHorizontalSite_Integer(n.r, n.c, n.i);
+            drawTextWithHalo(label, n.x, n.y + 4);
+          }
+        }
+      } else {
+        const junctions = listJunctions();
+        for (const p of junctions) {
+          const label = labelForJunction_Integer(p.r, p.c);
+          drawTextWithHalo(label, p.x, p.y + 6);
+        }
 
-      const { vertical, horizontal } = listEdgeSites();
-      for (const s of vertical) {
-        const label = labelForVerticalSite_Integer(s.r, s.c, s.i);
-        drawTextWithHalo(label, s.x, s.y + 4);
-      }
-      for (const s of horizontal) {
-        const label = labelForHorizontalSite_Integer(s.r, s.c, s.i);
-        drawTextWithHalo(label, s.x, s.y + 4);
+        const { vertical, horizontal } = listEdgeSites();
+        for (const s of vertical) {
+          const label = labelForVerticalSite_Integer(s.r, s.c, s.i);
+          drawTextWithHalo(label, s.x, s.y + 4);
+        }
+        for (const s of horizontal) {
+          const label = labelForHorizontalSite_Integer(s.r, s.c, s.i);
+          drawTextWithHalo(label, s.x, s.y + 4);
+        }
       }
 
       ctx.restore();
@@ -668,48 +684,57 @@
       }
 
       if (removedEdgeIds.size || suppressedNodeIds.size) {
-        // Build adjacency for suppression logic.
-        const neighborsByNode = new Map();
-        for (const e of edges) {
-          if (removedEdgeIds.has(e.id)) continue;
-          if (!neighborsByNode.has(e.a)) neighborsByNode.set(e.a, []);
-          if (!neighborsByNode.has(e.b)) neighborsByNode.set(e.b, []);
-          neighborsByNode.get(e.a).push({ to: e.b, edgeId: e.id });
-          neighborsByNode.get(e.b).push({ to: e.a, edgeId: e.id });
-        }
+        // Start with edges after removals.
+        let currentEdges = edges.filter(e => !removedEdgeIds.has(e.id));
+
+        const rebuildPairIndex = () => {
+          const map = new Map();
+          for (const e of currentEdges) {
+            const k = e.a < e.b ? `${e.a}-${e.b}` : `${e.b}-${e.a}`;
+            map.set(k, e.id);
+          }
+          return map;
+        };
+
+        const neighborsOf = (nodeId) => {
+          const neighbors = [];
+          for (const e of currentEdges) {
+            if (e.a === nodeId) neighbors.push({ to: e.b, edgeId: e.id });
+            else if (e.b === nodeId) neighbors.push({ to: e.a, edgeId: e.id });
+          }
+          return neighbors;
+        };
 
         for (const nodeId of suppressedNodeIds) {
-          const neighbors = neighborsByNode.get(nodeId) || [];
+          const neighbors = neighborsOf(nodeId);
           if (neighbors.length === 2) {
             const n0 = neighbors[0].to;
             const n1 = neighbors[1].to;
+            const pairIndex = rebuildPairIndex();
             const k = n0 < n1 ? `${n0}-${n1}` : `${n1}-${n0}`;
-            const existingId = edgeByPair.get(k);
-            if (existingId == null || removedEdgeIds.has(existingId)) {
+            if (!pairIndex.has(k)) {
               const a = nodeById.get(n0);
               const b = nodeById.get(n1);
               if (a && b) {
                 const id = nextEdgeId++;
                 const dx = b.x - a.x, dy = b.y - a.y; const len = Math.hypot(dx, dy);
                 const kind = Math.abs(dx) >= Math.abs(dy) ? 'grid_h_seg' : 'grid_v_seg';
-                edges.push({ id, a: n0, b: n1, ax:a.x, ay:a.y, bx:b.x, by:b.y, kind, segments: 1, length: len });
+                currentEdges.push({ id, a: n0, b: n1, ax:a.x, ay:a.y, bx:b.x, by:b.y, kind, segments: 1, length: len });
               }
             }
           }
-          for (const entry of neighbors) removedEdgeIds.add(entry.edgeId);
+          // Remove incident edges.
+          currentEdges = currentEdges.filter(e => e.a !== nodeId && e.b !== nodeId);
         }
 
-        // Filter edges and rebuild adjacency + edgeByPair.
-        const keptEdges = [];
+        // Rebuild adjacency + edgeByPair from currentEdges.
         adj.clear();
         edgeByPair.clear();
-        for (const e of edges) {
-          if (removedEdgeIds.has(e.id)) continue;
-          keptEdges.push(e);
+        edges.length = 0;
+        for (const e of currentEdges) {
+          edges.push(e);
           addAdj(e.a, e.b, e.id);
         }
-        edges.length = 0;
-        edges.push(...keptEdges);
 
         // Remove suppressed nodes from maps.
         if (suppressedNodeIds.size) {
@@ -817,6 +842,10 @@
     }
 
     function parseEdgeSpec(spec) {
+      if (typeof spec === 'number' || (typeof spec === 'string' && /^\d+$/.test(spec))) {
+        const id = parseInt(spec, 10);
+        return state.graph ? state.graph.edges.find(e => e.id === id) || null : null;
+      }
       if (typeof spec === 'string' && spec.startsWith('PZ(')) return edgeFromPZToken(spec);
       if (Array.isArray(spec) && spec.length === 2) return edgeFromNodePair(spec[0], spec[1]);
       if (spec && typeof spec === 'object' && spec.pz) {
@@ -854,10 +883,70 @@
         const capW=28, capH=16, rr=8; const capX=m.x-capW/2, capY=m.y-capH/2;
         roundedRect(ctx, capX, capY, capW, capH, rr, '#1e2a3a', '#68b5ff');
         ctx.fillStyle='#e5f2ff'; ctx.font='bold 10px system-ui'; ctx.textAlign='center'; ctx.textBaseline='middle';
-        const label = state.innerPZLabels.get(id) || 'moin';
+        const label = state.innerPZLabels.get(id) || 'pz';
         ctx.fillText(label, m.x, m.y);
       }
       ctx.restore();
+    }
+
+    function refreshInnerPZKeys() {
+      if (!state.graph) return;
+      state.innerPZKeys.clear();
+      state.innerPZLabels.clear();
+      const latticeId = state.graph.latticeId;
+      const edgeIdBetween = state.graph.edgeIdBetween;
+      const addLineEdges = (A, B) => {
+        if (A.R === B.R) {
+          const step = A.C <= B.C ? 1 : -1;
+          for (let c = A.C; c !== B.C; c += step) {
+            const a = latticeId.get(`${A.R},${c}`);
+            const b = latticeId.get(`${A.R},${c + step}`);
+            if (a == null || b == null) continue;
+            const eid = edgeIdBetween(a, b);
+            if (eid != null) state.innerPZKeys.add(eid);
+          }
+          return;
+        }
+        if (A.C === B.C) {
+          const step = A.R <= B.R ? 1 : -1;
+          for (let r = A.R; r !== B.R; r += step) {
+            const a = latticeId.get(`${r},${A.C}`);
+            const b = latticeId.get(`${r + step},${A.C}`);
+            if (a == null || b == null) continue;
+            const eid = edgeIdBetween(a, b);
+            if (eid != null) state.innerPZKeys.add(eid);
+          }
+        }
+      };
+      for (const item of state.innerPZSpecs || []) {
+        let e = null;
+        const spec = item.spec;
+        if (Array.isArray(spec) && spec.length === 2) {
+          const A = parseNodeStr(spec[0]);
+          const B = parseNodeStr(spec[1]);
+          if (A && B) {
+            const idA = latticeId.get(`${Math.round(A.R)},${Math.round(A.C)}`);
+            const idB = latticeId.get(`${Math.round(B.R)},${Math.round(B.C)}`);
+            if (idA != null && idB != null) {
+              const eid = edgeIdBetween(idA, idB);
+              if (eid != null) {
+                state.innerPZKeys.add(eid);
+              } else if (Math.round(A.R) === Math.round(B.R) || Math.round(A.C) === Math.round(B.C)) {
+                addLineEdges({ R: Math.round(A.R), C: Math.round(A.C) }, { R: Math.round(B.R), C: Math.round(B.C) });
+              }
+            }
+          } else {
+            e = edgeFromNodePair(spec[0], spec[1]);
+          }
+        } else {
+          e = parseEdgeSpec(spec);
+        }
+        if (!e) continue;
+        if (e.kind==='grid_v_seg' || e.kind==='grid_h_seg') {
+          state.innerPZKeys.add(e.id);
+          if (item.label) state.innerPZLabels.set(e.id, item.label);
+        }
+      }
     }
 
     // ---- Picking a grid segment under pointer ----
@@ -1190,39 +1279,27 @@
           namedPZMode = true;
           state.pzs = { top: false, right: false, bottom: false, left: false };
           state.pzPlacementType = 'inner';
-          state.innerPZKeys.clear();
-          state.innerPZLabels.clear();
+          state.innerPZSpecs = [];
           for (const [name, edgeSpec] of Object.entries(arch.pzs)) {
-            let e = null;
-            if (Array.isArray(edgeSpec) && edgeSpec.length === 2) {
-              e = edgeFromNodePair(edgeSpec[0], edgeSpec[1]);
-            } else {
-              e = parseEdgeSpec(edgeSpec);
-            }
-            if (!e) continue;
-            state.innerPZKeys.add(e.id);
-            state.innerPZLabels.set(e.id, name);
+            state.innerPZSpecs.push({ spec: edgeSpec, label: name });
           }
-          state.graph = buildGraph();
         }
       }
       if (hasInner) {
         if (!namedPZMode) {
-          state.innerPZKeys.clear();
-          state.innerPZLabels.clear();
+          state.innerPZSpecs = [];
         }
         for (const k of arch.innerPZEdges) {
           // Accept either numeric id or endpoint pair ["(r,c)","(r2,c2)"]
           let id = null;
           if (typeof k === 'number' || (typeof k === 'string' && /^\d+$/.test(k))) {
             id = parseInt(k, 10);
-          } else if (Array.isArray(k) && k.length === 2) {
-            const e = edgeFromNodePair(k[0], k[1]);
-            id = e ? e.id : null;
           }
-          if (id == null || !Number.isFinite(id)) continue;
-          const e = state.graph.edges.find(e=>e.id===id);
-          if (e && (e.kind==='grid_v_seg' || e.kind==='grid_h_seg')) state.innerPZKeys.add(id);
+          if (id != null && Number.isFinite(id)) {
+            state.innerPZSpecs.push({ spec: id, label: null });
+          } else {
+            state.innerPZSpecs.push({ spec: k, label: null });
+          }
         }
       }
 
@@ -1241,6 +1318,7 @@
       if (hasRemoved || hasSuppressed) {
         state.graph = buildGraph();
       }
+      refreshInnerPZKeys();
 
       // Lock placement mode based on presence (if any provided)
       if (hasInner && !hasPZs) state.pzPlacementType = 'inner';
