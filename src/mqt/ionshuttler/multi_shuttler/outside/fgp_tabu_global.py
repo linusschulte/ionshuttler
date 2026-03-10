@@ -69,6 +69,8 @@ def fgp_tabu_global(
     candidate_list_length: int | None = None,
     per_slice_quota: int | None = None,
     refresh_every: int | None = None,
+    relaxed_layering: bool = True,
+    max_layer_depth: int | None = None,
     graph_based_distance: bool = False,
     enable_plots: bool = False,
     randomize_initial: bool = False,
@@ -91,6 +93,8 @@ def fgp_tabu_global(
         print(f"candidate_list_length: {candidate_list_length}")
         print(f"per_slice_quota: {per_slice_quota}")
         print(f"refresh_every: {refresh_every}")
+        print(f"relaxed_layering: {relaxed_layering}")
+        print(f"max_layer_depth: {max_layer_depth}")
         print(f"graph_based_distance: {graph_based_distance}")
         if legacy_params:
             ignored = ", ".join(sorted(legacy_params))
@@ -139,6 +143,8 @@ def fgp_tabu_global(
         candidate_list_length=candidate_list_length,
         per_slice_quota=per_slice_quota,
         refresh_every=refresh_every,
+        relaxed_layering=relaxed_layering,
+        max_layer_depth=max_layer_depth,
         randomize_initial=randomize_initial,
         seed=seed,
     )
@@ -245,7 +251,24 @@ def partition_slice(
 
     # perform contraction of qubits sharing multi-qubit gates into supernodes
     supernodes, qubit_to_supernode = _contract_supernodes(qubits, required_edges)
+
+    supernode_loads = [0] * len(supernodes)
+    #print("--")
+    #print("load before:", [sn.load for sn in supernodes])
+    for gate_id in slice_gate_ids:
+        qubits_in_gate = gate_info[gate_id].qubits
+        if not qubits_in_gate:
+            continue
+        touched_supernodes = {
+            qubit_to_supernode[q] for q in set(qubits_in_gate) if q in qubit_to_supernode
+        }
+        for sn_id in touched_supernodes:
+            supernode_loads[sn_id] += len(qubits_in_gate)
+    for supernode in supernodes:
+        supernode.load = max(1, supernode_loads[supernode.id])
     
+    #print("-load after:", [sn.load for sn in supernodes])
+    #print("gates:", [(gid, gate_info[gid].qubits) for gid in slice_gate_ids])
 
     # greedy initial partitioning
     assignment: list[int] | None = None
@@ -437,7 +460,11 @@ def tabu_optimize_global(
             cluster = assignment_copy[sn.id]
             if cluster < 0 or cluster >= num_pzs:
                 raise ValueError(f"Supernode {sn.id} assigned to invalid cluster {cluster}.")
-            active_load = sum(1 for q in sn.qubits if q in active_qubits)
+            active_load = sn.load if sum(1 for q in sn.qubits if q in active_qubits) > 0 else 0
+            if DEBUG_FLAG:
+                if sum(1 for q in sn.qubits if q in active_qubits) != active_load:
+                    print("Supernode:", sn.id, "qubits:", sn.qubits, "active qubits:", [q for q in sn.qubits if q in active_qubits])
+                    print("active_load before:", sum(1 for q in sn.qubits if q in active_qubits), "after:", active_load)
             active_loads[sn.id] = active_load
             loads[cluster] += active_load
             for qubit in sn.qubits:
@@ -525,7 +552,7 @@ def tabu_optimize_global(
         move_histogram: dict[float, int] = {}
         total_moves = 0
         if DEBUG_FLAG and ASSERT_FULL_COST:
-            full_cost_current, _, _ = _compute_global_cost_full(
+            full_cost_current, _, _, _ = _compute_global_cost_full(
                 partition_results,
                 assignments_by_slice,
                 num_pzs=num_pzs,
@@ -577,7 +604,7 @@ def tabu_optimize_global(
                             total_moves += 1
                             if DEBUG_FLAG and ASSERT_FULL_COST:
                                 assignments_by_slice[slice_idx][sn.id] = target_cluster
-                                full_cost_new, _, _ = _compute_global_cost_full(
+                                full_cost_new, _, _, _ = _compute_global_cost_full(
                                     partition_results,
                                     assignments_by_slice,
                                     num_pzs=num_pzs,
@@ -638,7 +665,7 @@ def tabu_optimize_global(
                         total_moves += 1
                         if DEBUG_FLAG and ASSERT_FULL_COST:
                             assignments_by_slice[slice_idx][sn.id] = target_cluster
-                            full_cost_new, _, _ = _compute_global_cost_full(
+                            full_cost_new, _, _, _ = _compute_global_cost_full(
                                 partition_results,
                                 assignments_by_slice,
                                 num_pzs=num_pzs,
@@ -1054,7 +1081,7 @@ def _compute_global_cost_full(
     pz_positions: Sequence[ProcessingZone | None] | None,
     pz_distance_map: dict[tuple[str, str], float] | None,
     slack_weights: Sequence[Sequence[float]] | None = None,
-) -> tuple[float, list[list[int]], list[list[int]]]:
+) -> tuple[float, list[list[int]], list[list[int]], list[list[int]]]:
     slice_loads: list[list[int]] = []
     qubit_assignments_by_slice: list[list[int]] = [
         [-1] * num_qubits for _ in partition_results
@@ -1068,7 +1095,7 @@ def _compute_global_cost_full(
         assignment = assignments_by_slice[slice_idx]
         for sn in result.supernodes:
             cluster = assignment[sn.id]
-            active_load = sum(1 for q in sn.qubits if q in active_qubits)
+            active_load = sn.load if sum(1 for q in sn.qubits if q in active_qubits) > 0 else 0
             loads[cluster] += active_load
             for qubit in sn.qubits:
                 if 0 <= qubit < num_qubits:
@@ -1237,7 +1264,116 @@ class _UnionFind:
         if rank_a == rank_b:
             self.rank[root_a] = rank_a + 1
         return True
-    
+
+
+def _can_accept_gate_without_triplet(
+    qubits: Sequence[int],
+    uf: _UnionFind,
+    component_sizes: dict[int, int],
+) -> bool:
+    if len(qubits) <= 1:
+        return True
+    if len(qubits) > 2:
+        return False
+
+    q0, q1 = qubits
+    root0 = uf.find(q0)
+    root1 = uf.find(q1)
+    size0 = component_sizes.get(root0, 1)
+    size1 = component_sizes.get(root1, 1)
+    if root0 == root1:
+        return size0 <= 2
+    return size0 + size1 <= 2
+
+
+def _build_time_slices_relaxed(
+    gate_ids: Sequence[int],
+    gate_info: dict[int, GateInfo],
+    num_qubits: int,
+    *,
+    max_layer_depth: int | None = None,
+) -> list[list[int]]:
+    gate_ids = sorted(gate_ids)
+    processed: set[int] = set()
+    slices: list[list[int]] = []
+    total_gates = len(gate_ids)
+    max_depth = None if max_layer_depth is None or max_layer_depth <= 0 else max_layer_depth
+
+    while len(processed) < total_gates:
+        blocked_qubits: set[int] = set()
+        current_slice: list[int] = []
+        progress = False
+        gate_depth_by_qubit: defaultdict[int, int] = defaultdict(int)
+        uf = _UnionFind(range(num_qubits))
+        component_sizes: dict[int, int] = {q: 1 for q in range(num_qubits)}
+        component_members: dict[int, set[int]] = {q: {q} for q in range(num_qubits)}
+
+        for gate_id in gate_ids:
+            if gate_id in processed:
+                continue
+            qubits = tuple(dict.fromkeys(gate_info[gate_id].qubits))
+            if not qubits:
+                processed.add(gate_id)
+                progress = True
+                continue
+            if any(qubit in blocked_qubits for qubit in qubits):
+                blocked_qubits.update(qubits)
+                continue
+            if max_depth is not None and any(gate_depth_by_qubit[qubit] >= max_depth for qubit in qubits):
+                blocked_qubits.update(qubits)
+                continue
+            if not _can_accept_gate_without_triplet(qubits, uf, component_sizes):
+                if len(qubits) == 2:
+                    root0 = uf.find(qubits[0])
+                    root1 = uf.find(qubits[1])
+                    blocked_qubits.update(component_members.get(root0, {qubits[0]}))
+                    blocked_qubits.update(component_members.get(root1, {qubits[1]}))
+                blocked_qubits.update(qubits)
+                continue
+
+            processed.add(gate_id)
+            progress = True
+            current_slice.append(gate_id)
+            for qubit in qubits:
+                gate_depth_by_qubit[qubit] += 1
+                if max_depth is not None and gate_depth_by_qubit[qubit] >= max_depth:
+                    blocked_qubits.add(qubit)
+
+            if len(qubits) == 2:
+                q0, q1 = qubits
+                root0 = uf.find(q0)
+                root1 = uf.find(q1)
+                if root0 != root1:
+                    members0 = component_members.get(root0, {q0})
+                    members1 = component_members.get(root1, {q1})
+                    uf.union(q0, q1)
+                    new_root = uf.find(q0)
+                    merged_members = set(members0) | set(members1)
+                    component_members[new_root] = merged_members
+                    component_sizes[new_root] = len(merged_members)
+                    if root0 != new_root:
+                        component_members.pop(root0, None)
+                        component_sizes.pop(root0, None)
+                    if root1 != new_root:
+                        component_members.pop(root1, None)
+                        component_sizes.pop(root1, None)
+
+        if current_slice:
+            slices.append(current_slice)
+
+        if not progress:
+            for gate_id in gate_ids:
+                if gate_id in processed:
+                    continue
+                processed.add(gate_id)
+                if gate_info[gate_id].qubits:
+                    slices.append([gate_id])
+                break
+            else:
+                break
+
+    return slices
+
 
 
 def _run_fgp_tabu(
@@ -1260,13 +1396,25 @@ def _run_fgp_tabu(
     candidate_list_length: int | None = None,
     per_slice_quota: int | None = None,
     refresh_every: int | None = None,
+    relaxed_layering: bool = True,
+    max_layer_depth: int | None = None,
     randomize_initial: bool = False,
     seed: int | None = None,
 
 ) -> dict[str, object]:
     """Core partition routine shared by CLI and API entry points."""
 
-    time_slices = _build_time_slices(sequence, gate_info, num_qubits)
+    if relaxed_layering:
+        time_slices = _build_time_slices_relaxed(
+            sequence,
+            gate_info,
+            num_qubits,
+            max_layer_depth=max_layer_depth,
+        )
+    else:
+        time_slices = _build_time_slices(sequence, gate_info, num_qubits)
+
+    print("NUM SLICES:", len(time_slices))
     partitioning_results: list[ContractionResult] = []
     initial_assignment: list[int] | None = None
 
@@ -1580,10 +1728,13 @@ def _compute_supernode_scores_for_slice(
             count += 1
         
         cluster = current[sn.qubits[0]] if sn.qubits else -1
-        overflow = 0.0
-        if capacity is not None and 0 <= cluster < len(loads):
-            overflow = max(0, loads[cluster] - capacity)
-        total += balance_penalty * overflow
+        overflow_penalty = 0.0
+        if (
+            capacity is not None
+            and 0 <= cluster < len(loads)
+        ):
+            overflow_penalty = max(0, loads[cluster] - capacity)
+        total += balance_penalty * overflow_penalty
         #mean_score = total / count if count else 0.0
         scores[sn.id] = total
     return scores
