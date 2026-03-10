@@ -280,6 +280,8 @@
       pzPlacementType: null, // null | 'outer' | 'inner'
       innerPZKeys: new Set(), // set of edge keys for grid_* segments
       innerPZLabels: new Map(), // edge key -> label (e.g., pz1)
+      removedEdgeSpecs: [],
+      suppressedNodeSpecs: [],
       gridRect: { x: 80, y: 80, w: 600, h: 600 },
       margin: 80,
       graph: null,
@@ -635,6 +637,96 @@
 
       ['top','right','bottom','left'].forEach(buildPZChain);
 
+      // ---- Apply structural overrides (removed edges, suppressed nodes) ----
+      const removedEdgeSpecs = Array.isArray(state.removedEdgeSpecs) ? state.removedEdgeSpecs : [];
+      const suppressedNodeSpecs = Array.isArray(state.suppressedNodeSpecs) ? state.suppressedNodeSpecs : [];
+
+      const edgeIdFromNodePair = (nA, nB) => {
+        const A = parseNodeStr(nA), B = parseNodeStr(nB);
+        if (!A || !B) return null;
+        const idA = latticeId.get(keyRC(Math.round(A.R), Math.round(A.C)));
+        const idB = latticeId.get(keyRC(Math.round(B.R), Math.round(B.C)));
+        if (idA == null || idB == null) return null;
+        const k = idA < idB ? `${idA}-${idB}` : `${idB}-${idA}`;
+        return edgeByPair.get(k) ?? null;
+      };
+
+      const removedEdgeIds = new Set();
+      for (const spec of removedEdgeSpecs) {
+        if (Array.isArray(spec) && spec.length === 2) {
+          const eid = edgeIdFromNodePair(spec[0], spec[1]);
+          if (eid != null) removedEdgeIds.add(eid);
+        }
+      }
+
+      const suppressedNodeIds = new Set();
+      for (const spec of suppressedNodeSpecs) {
+        const n = parseNodeStr(spec);
+        if (!n) continue;
+        const id = latticeId.get(keyRC(Math.round(n.R), Math.round(n.C)));
+        if (id != null) suppressedNodeIds.add(id);
+      }
+
+      if (removedEdgeIds.size || suppressedNodeIds.size) {
+        // Build adjacency for suppression logic.
+        const neighborsByNode = new Map();
+        for (const e of edges) {
+          if (removedEdgeIds.has(e.id)) continue;
+          if (!neighborsByNode.has(e.a)) neighborsByNode.set(e.a, []);
+          if (!neighborsByNode.has(e.b)) neighborsByNode.set(e.b, []);
+          neighborsByNode.get(e.a).push({ to: e.b, edgeId: e.id });
+          neighborsByNode.get(e.b).push({ to: e.a, edgeId: e.id });
+        }
+
+        for (const nodeId of suppressedNodeIds) {
+          const neighbors = neighborsByNode.get(nodeId) || [];
+          if (neighbors.length === 2) {
+            const n0 = neighbors[0].to;
+            const n1 = neighbors[1].to;
+            const k = n0 < n1 ? `${n0}-${n1}` : `${n1}-${n0}`;
+            const existingId = edgeByPair.get(k);
+            if (existingId == null || removedEdgeIds.has(existingId)) {
+              const a = nodeById.get(n0);
+              const b = nodeById.get(n1);
+              if (a && b) {
+                const id = nextEdgeId++;
+                const dx = b.x - a.x, dy = b.y - a.y; const len = Math.hypot(dx, dy);
+                const kind = Math.abs(dx) >= Math.abs(dy) ? 'grid_h_seg' : 'grid_v_seg';
+                edges.push({ id, a: n0, b: n1, ax:a.x, ay:a.y, bx:b.x, by:b.y, kind, segments: 1, length: len });
+              }
+            }
+          }
+          for (const entry of neighbors) removedEdgeIds.add(entry.edgeId);
+        }
+
+        // Filter edges and rebuild adjacency + edgeByPair.
+        const keptEdges = [];
+        adj.clear();
+        edgeByPair.clear();
+        for (const e of edges) {
+          if (removedEdgeIds.has(e.id)) continue;
+          keptEdges.push(e);
+          addAdj(e.a, e.b, e.id);
+        }
+        edges.length = 0;
+        edges.push(...keptEdges);
+
+        // Remove suppressed nodes from maps.
+        if (suppressedNodeIds.size) {
+          for (const id of suppressedNodeIds) {
+            const node = nodeById.get(id);
+            if (!node) continue;
+            nodeById.delete(id);
+          }
+          for (const [key, id] of latticeId.entries()) {
+            if (suppressedNodeIds.has(id)) latticeId.delete(key);
+          }
+          const keptNodes = nodes.filter(n => !suppressedNodeIds.has(n.id));
+          nodes.length = 0;
+          nodes.push(...keptNodes);
+        }
+      }
+
       return { nodes, edges, nodeById, latticeId, pzIndex, adj, edgeIdBetween };
     }
 
@@ -852,19 +944,38 @@
       ctx.fillStyle = '#0e151f'; ctx.fillRect(x, y, w, h);
       ctx.lineWidth = 1; ctx.strokeStyle = '#2a3b52';
       ctx.beginPath();
-      for (const gx of xs) { ctx.moveTo(gx + 0.5, y); ctx.lineTo(gx + 0.5, y + h); }
-      for (const gy of ys) { ctx.moveTo(x, gy + 0.5); ctx.lineTo(x + w, gy + 0.5); }
+      if (state.graph) {
+        for (const e of state.graph.edges) {
+          if (e.kind !== 'grid_v_seg' && e.kind !== 'grid_h_seg') continue;
+          ctx.moveTo(e.ax + 0.5, e.ay + 0.5);
+          ctx.lineTo(e.bx + 0.5, e.by + 0.5);
+        }
+      } else {
+        for (const gx of xs) { ctx.moveTo(gx + 0.5, y); ctx.lineTo(gx + 0.5, y + h); }
+        for (const gy of ys) { ctx.moveTo(x, gy + 0.5); ctx.lineTo(x + w, gy + 0.5); }
+      }
       ctx.stroke();
       ctx.lineWidth = 2; ctx.strokeStyle = '#3a4f6c'; ctx.stroke();
       ctx.restore();
 
-      const junctions = listJunctions();
-      ctx.save(); for (const p of junctions) drawNode(p.x, p.y, 3.5, '#e8f2ff', '#1b2534'); ctx.restore();
-      const { vertical, horizontal } = listEdgeSites();
-      ctx.save();
-      for (const p of vertical)  drawNode(p.x, p.y, 2.2, '#b8d6ff', '#22334a');
-      for (const p of horizontal) drawNode(p.x, p.y, 2.2, '#b8d6ff', '#22334a');
-      ctx.restore();
+      if (state.graph) {
+        const junctions = state.graph.nodes.filter(n => n.kind === 'junction');
+        ctx.save(); for (const p of junctions) drawNode(p.x, p.y, 3.5, '#e8f2ff', '#1b2534'); ctx.restore();
+        const vertical = state.graph.nodes.filter(n => n.kind === 'site_v');
+        const horizontal = state.graph.nodes.filter(n => n.kind === 'site_h');
+        ctx.save();
+        for (const p of vertical)  drawNode(p.x, p.y, 2.2, '#b8d6ff', '#22334a');
+        for (const p of horizontal) drawNode(p.x, p.y, 2.2, '#b8d6ff', '#22334a');
+        ctx.restore();
+      } else {
+        const junctions = listJunctions();
+        ctx.save(); for (const p of junctions) drawNode(p.x, p.y, 3.5, '#e8f2ff', '#1b2534'); ctx.restore();
+        const { vertical, horizontal } = listEdgeSites();
+        ctx.save();
+        for (const p of vertical)  drawNode(p.x, p.y, 2.2, '#b8d6ff', '#22334a');
+        for (const p of horizontal) drawNode(p.x, p.y, 2.2, '#b8d6ff', '#22334a');
+        ctx.restore();
+      }
     }
 
     function drawPZsFromGraph() {
@@ -1048,8 +1159,10 @@
       const hasSites = arch.sites && typeof arch.sites.vertical === 'number' && typeof arch.sites.horizontal === 'number';
       const hasPZs = arch.pzs && typeof arch.pzs === 'object';
       const hasInner = Array.isArray(arch.innerPZEdges);
+      const hasRemoved = Array.isArray(arch.removedEdges);
+      const hasSuppressed = Array.isArray(arch.suppressedNodes);
 
-      if (!hasGrid && !hasSites && !hasPZs && !hasInner) return false;
+      if (!hasGrid && !hasSites && !hasPZs && !hasInner && !hasRemoved && !hasSuppressed) return false;
 
       if (hasGrid) {
         state.rows = clamp(parseInt(arch.grid.rows,10),1,128);
@@ -1111,6 +1224,22 @@
           const e = state.graph.edges.find(e=>e.id===id);
           if (e && (e.kind==='grid_v_seg' || e.kind==='grid_h_seg')) state.innerPZKeys.add(id);
         }
+      }
+
+      if (hasRemoved) {
+        state.removedEdgeSpecs = arch.removedEdges;
+      } else {
+        state.removedEdgeSpecs = [];
+      }
+
+      if (hasSuppressed) {
+        state.suppressedNodeSpecs = arch.suppressedNodes;
+      } else {
+        state.suppressedNodeSpecs = [];
+      }
+
+      if (hasRemoved || hasSuppressed) {
+        state.graph = buildGraph();
       }
 
       // Lock placement mode based on presence (if any provided)

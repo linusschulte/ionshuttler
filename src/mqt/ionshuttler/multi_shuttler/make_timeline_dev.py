@@ -36,7 +36,6 @@ from mqt.ionshuttler.multi_shuttler.outside.graph_utils import (
 from mqt.ionshuttler.multi_shuttler.outside.shuttle import main as run_shuttle_main
 from mqt.ionshuttler.multi_shuttler.outside import plotting as plotting_mod
 from mqt.ionshuttler.multi_shuttler.outside import shuttle as shuttle_mod
-print("USING SHUTTLE:", shuttle_mod.__file__)
 
 # ===========================
 # Config (mirrors run_benchmarks defaults)
@@ -49,7 +48,7 @@ ALGORITHM = "random_connecting"#"full_register_access"  # or "transpiled_surface
 OUTPUT_JSON = "timeline.json"
 
 GATE_TIME_1Q = 1
-GATE_TIME_2Q = 1
+GATE_TIME_2Q = 3
 
 # Paths/Cycles mode string for new main signature
 CYCLE_OR_PATHS_STR = "Cycles"  # set to "Cycles"/"Paths" to switch behavior
