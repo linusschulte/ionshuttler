@@ -407,8 +407,8 @@ def main(config: dict[str, Any]):
                     msg = (
                         f"Gate id {gate_id} assigned to multiple processing zones "
                         f"({gate_assignment[gate_id]}, {pz_name})."
-                )
-                raise ValueError(msg)
+                    )
+                    raise ValueError(msg)
             gate_assignment[gate_id] = pz_name
         if enforce_slice_plan:
             graph.initialize_slice_plan(None)
@@ -435,11 +435,13 @@ def main(config: dict[str, Any]):
             gate_assignment = result.gate_assignment
             graph.initialize_slice_plan(result.slice_plan, enforce=enforce_slice_plan)
             partition_result = result
-        elif algo_name_lower in {"fgp_tabu", "fgp_tabu_global", "fgp_kl"}:
+        elif algo_name_lower in {"fgp_tabu", "fgp_tabu_global", "fgp_tabu_global_2", "fgp_kl"}:
             if algo_name_lower == "fgp_tabu":
                 from outside.fgp_tabu import fgp_tabu as gate_partitioner
             elif algo_name_lower == "fgp_tabu_global":
                 from outside.fgp_tabu_global import fgp_tabu_global as gate_partitioner
+            elif algo_name_lower == "fgp_tabu_global_2":
+                from outside.fgp_tabu_global_2 import fgp_tabu_global as gate_partitioner
             else:
                 from outside.fgp_kl import fgp_kl as gate_partitioner
 
@@ -447,11 +449,15 @@ def main(config: dict[str, Any]):
                 algo_params["num_pzs"] = config.get("num_pzs", 1)
             if "capacity" not in algo_params:
                 algo_params["capacity"] = config.get("max_ions_per_pz", 1)
-            if algo_name_lower == "fgp_tabu_global":
+            if algo_name_lower in {"fgp_tabu_global", "fgp_tabu_global_2"}:
                 if "capacity_weight" not in algo_params:
                     algo_params["capacity_weight"] = 1.0
                 if "distance_weight" not in algo_params:
                     algo_params["distance_weight"] = 1.0
+                if "relaxed_layering" not in algo_params and "relaxed_layering" in config:
+                    algo_params["relaxed_layering"] = config["relaxed_layering"]
+                if "max_layer_depth" not in algo_params and "max_layer_depth" in config:
+                    algo_params["max_layer_depth"] = config["max_layer_depth"]
             else:
                 if "lookahead_weight_factor" not in algo_params:
                     algo_params["lookahead_weight_factor"] = 1.0
@@ -610,6 +616,7 @@ def main(config: dict[str, Any]):
     # --- Results ---
     end_time = datetime.now()
     cpu_time = end_time - start_time
+    print(f"\n {cpu_time.total_seconds():.2f}s CPU time")
 
     if collector:
         maxR = (m - 1) * v
@@ -819,27 +826,34 @@ if __name__ == "__main__":
     fgp_tabu_global = {
         'name': 'fgp_tabu_global',
         'params': {
-            'balance_penalty': [5], #np.linspace(0.1, 5, 40),  #[0.6],
+            'balance_penalty': [0.5], #np.linspace(0.1, 5, 40),  #[0.6],
             'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
-            'max_iterations_factor': [70], #list(range(0, 500+1, 100)),
+            'max_iterations_factor': [20], #list(range(0, 500+1, 100)),
             #'tabu_list_length': [200],
-            'seed': range(1),
+            'seed': range(3),
             'candidate_list_length': [None],
         },
-        '_sampling': {
-            'method': 'lhs',
-            'num_samples': 10,
-        },
     }
-    fgp_tabu_global_mini = {
+    fgp_tabu_global_long = {
         'name': 'fgp_tabu_global',
         'params': {
-            'balance_penalty': [5], #np.linspace(0.1, 5, 40),  #[0.6],
+            'balance_penalty': [0.5], #np.linspace(0.1, 5, 40),  #[0.6],
             'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
-            'max_iterations':   [2500], #list(range(0, 500+1, 100)),
-            'tabu_list_length': [200],
+            'max_iterations_factor': [50], #list(range(0, 500+1, 100)),
+            #'tabu_list_length': [200],
             'seed': range(3),
-            'candidate_list_length': [300],
+            'candidate_list_length': [None],
+        },
+    }
+    fgp_tabu_global_test = {
+        'name': 'fgp_tabu_global',
+        'params': {
+            'balance_penalty': [0.1,0.5,1,3,5,7], #np.linspace(0.1, 5, 40),  #[0.6],
+            #'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
+            'max_iterations_factor':   [20], #list(range(0, 500+1, 100)),
+            #'tabu_list_length': [200],
+            'seed': range(5),
+            'candidate_list_length': [None],
         },
     }
     fgp_tabu_global_mini_quota = {
@@ -884,10 +898,10 @@ if __name__ == "__main__":
         #"algorithm_name": ["random_nativegates_quantinuum_qiskit_opt2"],
         # Core architecture parameters
         'num_ions': [10,30,60],
-        'num_pzs': [2],
-        'ions_per_pz': [8],
+        'num_pzs': [4],
+        'ions_per_pz': [4],
         'grid_size': [4],
-        'mz_trap_size': [3],
+        'mz_trap_size': [4],
         #'pz_numbers_to_use': [[1,9,6,3,11,8]], 
         'use_dag': [False],
         'enforce_slice_plan': [False],
@@ -904,7 +918,7 @@ if __name__ == "__main__":
             {'name': 'none'},  # No partitioning
             #fgp_tabu,
             fgp_tabu_global,
-            #fgp_tabu_global_mini,
+            #fgp_tabu_global_test,
             #fgp_tabu_global_mini_quota,
             #fgp_tabu_global_slack
             #fgp_kl,
@@ -913,7 +927,7 @@ if __name__ == "__main__":
         ]
     }
     dag_string = "WITHDAG" if True in meta_study_config.get("use_dag", []) else "NODAG"
-    unique_id = f"fgp_tabu_global_benchmark"
+    unique_id = f"OUTSIDE_fgp_tabu_global_benchmark_final"
     unique_id += f"_{str(meta_study_config['num_pzs'])}pzs_{str(meta_study_config['ions_per_pz'])}perpz_{dag_string}"
     clear_prev = False
 

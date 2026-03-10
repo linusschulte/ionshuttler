@@ -381,22 +381,30 @@ def main(config: dict[str, Any]):
             gate_partition_for_run = result.gate_partition_by_pz
             gate_assignment = result.gate_assignment
             partition_result = result
-        elif algo_name_lower in {"fgp_tabu", "fgp_tabu_global", "fgp_kl"}:
+        elif algo_name_lower in {"fgp_tabu", "fgp_tabu_global", "fgp_tabu_global_2", "fgp_kl"}:
             if algo_name_lower == "fgp_tabu":
                 from outside.fgp_tabu import fgp_tabu as gate_partitioner
             elif algo_name_lower == "fgp_tabu_global":
                 from outside.fgp_tabu_global import fgp_tabu_global as gate_partitioner
+            elif algo_name_lower == "fgp_tabu_global_2":
+                from outside.fgp_tabu_global_2 import fgp_tabu_global as gate_partitioner
             else:
                 from outside.fgp_kl import fgp_kl as gate_partitioner
             if "num_pzs" not in algo_params:
                 algo_params["num_pzs"] = config.get("num_pzs", 1)
             if "capacity" not in algo_params:
                 algo_params["capacity"] = config.get("max_ions_per_pz", 1)
-            if algo_name_lower == "fgp_tabu_global":
+            if algo_name_lower in {"fgp_tabu_global", "fgp_tabu_global_2"}:
                 if "capacity_weight" not in algo_params:
                     algo_params["capacity_weight"] = 1.0
                 if "distance_weight" not in algo_params:
                     algo_params["distance_weight"] = 1.0
+                if "balance_weight" not in algo_params:
+                    algo_params["balance_weight"] = 1.0
+                if "relaxed_layering" not in algo_params and "relaxed_layering" in config:
+                    algo_params["relaxed_layering"] = config["relaxed_layering"]
+                if "max_layer_depth" not in algo_params and "max_layer_depth" in config:
+                    algo_params["max_layer_depth"] = config["max_layer_depth"]
             else:
                 if "lookahead_weight_factor" not in algo_params:
                     algo_params["lookahead_weight_factor"] = 1.0
@@ -536,8 +544,22 @@ def main(config: dict[str, Any]):
             return
         algo = str(gate_partition_algorithm_cfg["name"]) if gate_partition_algorithm_cfg is not None else "none"
         out_name = timeline_output + "_" + algorithm_name + "_" + algo + ".json"
-        pzs_payload = {pz.name: _edge_to_strings(pz.edge_idc) for pz in graph.pzs}
-        inner_pz_edges = [_edge_to_strings(pz.edge_idc) for pz in graph.pzs]
+        processing_edges: list[tuple[tuple[int, int], tuple[int, int]]] = [
+            edge for edge, data in graph.edges.items() if data.get("edge_type") == "processing"
+        ]
+        pzs_payload: dict[str, list[str]] = {}
+        for pz in graph.pzs:
+            normalized = tuple(sorted(pz.edge_idc, key=sum))
+            if graph.has_edge(*normalized):
+                pzs_payload[pz.name] = _edge_to_strings(normalized)
+                continue
+            match = next(
+                (edge for edge, data in graph.edges.items() if data.get("pz_name") == pz.name),
+                None,
+            )
+            if match is not None:
+                pzs_payload[pz.name] = _edge_to_strings(match)
+        inner_pz_edges = [_edge_to_strings(edge) for edge in processing_edges]
         removed_edges_cfg = config.get("edges_to_delete") or []
         suppressed_nodes_cfg = config.get("nodes_to_suppress") or []
 
@@ -774,16 +796,34 @@ if __name__ == "__main__":
     fgp_tabu_global = {
         'name': 'fgp_tabu_global',
         'params': {
-            'balance_penalty': [1], #np.linspace(0.1, 5, 40),  #[0.6],
-            'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
-            'max_iterations_factor': [50,100,200], 
+            'balance_penalty': [0.5], #np.linspace(0.1, 5, 40),  #[0.6],
+            #'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
+            'max_iterations_factor': [20], 
             #'tabu_list_length': [200],
             'seed': range(1),
             'candidate_list_length': [None],
         },
-        '_sampling': {
-            'method': 'lhs',
-            'num_samples': 10,
+    }
+    fgp_tabu_global_long = {
+        'name': 'fgp_tabu_global',
+        'params': {
+            'balance_penalty': [0.5], #np.linspace(0.1, 5, 40),  #[0.6],
+            #'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
+            'max_iterations_factor': [50], 
+            #'tabu_list_length': [200],
+            'seed': range(5),
+            'candidate_list_length': [None],
+        },
+    }
+    fgp_tabu_global_test = {
+        'name': 'fgp_tabu_global',
+        'params': {
+            'balance_penalty': [0.5], #np.linspace(0.1, 5, 40),  #[0.6],
+            #'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
+            'max_iterations_factor': [20], 
+            #'tabu_list_length': [200],
+            'seed': range(5),
+            'candidate_list_length': [None],
         },
     }
     fgp_tabu_global_mini = {
@@ -835,14 +875,14 @@ if __name__ == "__main__":
 
 
     meta_study_config = {
-        "algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2", "qaoa_nativegates_quantinuum_opt2", "qpeexact_nativegates_quantinuum_qiskit_opt2", "random_nativegates_quantinuum_qiskit_opt2"],
-        #"algorithm_name": ["random_nativegates_quantinuum_qiskit_opt2"],
+        #"algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2", "qaoa_nativegates_quantinuum_opt2", "qpeexact_nativegates_quantinuum_qiskit_opt2", "random_nativegates_quantinuum_qiskit_opt2"],
+        "algorithm_name": ["random_nativegates_quantinuum_qiskit_opt2"],
         # Core architecture parameters
-        'num_ions': [20],#[10,30,60],
+        'num_ions': [10,30,60],
         'num_pzs': [8],
         'ions_per_pz': [2],
         'grid_size': [4],
-        'mz_trap_size': [1],
+        'mz_trap_size': [4],
         #'pz_numbers_to_use': [[1,9,6,3,11,8]], 
         'use_dag': [False],
         'enforce_slice_plan': [False],
@@ -850,15 +890,17 @@ if __name__ == "__main__":
         'save' : [False],
         'plot' : [False],
         'optimize_params': [False],
-        #'gate_density': [(0.5,0.5)],
+
         #'gate_density': [(0.0,1.0), (0.1,0.9), (0.2,0.8), (0.3,0.7), (0.4,0.6), (0.5,0.5), (0.6,0.4), (0.7,0.3), (0.8,0.2), (0.9,0.1), (1.0,0.0)],
         #'gate_density': [(0.1,0.1), (0.25,0.25), (0.5,0.5), (0.75, 0.75), (1.0, 1.0)], 
         
         # Partitioning algorithm configurations
         'partitioning_algorithms': [
-            #{'name': 'none'},  # No partitioning
+            {'name': 'none'},  # No partitioning
             #fgp_tabu,
             fgp_tabu_global,
+            #fgp_tabu_global_long,
+            #fgp_tabu_global_test,
             #fgp_tabu_global_mini,
             #fgp_tabu_global_mini_quota,
             #fgp_tabu_global_slack
@@ -868,7 +910,7 @@ if __name__ == "__main__":
         ]
     }
     dag_string = "WITHDAG" if True in meta_study_config.get("use_dag", []) else "NODAG"
-    unique_id = f"INSIDE_fgp_tabu_global_benchmark"
+    unique_id = f"INSIDE_fgp_tabu_global_circ-random_final_dense_4"
     unique_id += f"_{str(meta_study_config['num_pzs'])}pzs_{str(meta_study_config['ions_per_pz'])}perpz_{dag_string}"
     clear_prev = False
 
