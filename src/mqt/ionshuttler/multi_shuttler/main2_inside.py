@@ -796,12 +796,26 @@ if __name__ == "__main__":
     fgp_tabu_global = {
         'name': 'fgp_tabu_global',
         'params': {
-            'balance_penalty': [0.5], #np.linspace(0.1, 5, 40),  #[0.6],
-            #'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
-            'max_iterations_factor': [20], 
+            'balance_penalty': [0.5], # np.linspace(0.1, 5, 40),  #[0.5],
+            'distance_weight_factor': [1.0], #np.linspace(0.1, 5, 20),  #[1.0],
+            'max_iterations_factor': [0, 20, 50], 
             #'tabu_list_length': [200],
-            'seed': range(1),
+            'seed': range(5),
             'candidate_list_length': [None],
+            'relaxed_layering': [False],
+        },
+    }
+    fgp_tabu_global_2 = {
+        'name': 'fgp_tabu_global_2',
+        'params': {
+            'balance_penalty': [0, 0.1], #[0, 0.01, 0.05, 0.1, 0.5], #[0.6],
+            'distance_weight_factor': [1.0],  #[1.5],
+            'capacity_weight': [0, 0.1], #[0, 0.01, 0.05, 0.1, 0.5],  #[1.0],
+            'max_iterations_factor': [0,20], 
+            #'tabu_list_length': [200],
+            'seed': range(3),
+            'candidate_list_length': [None],
+            'relaxed_layering': [True]#, False],
         },
     }
     fgp_tabu_global_long = {
@@ -875,12 +889,12 @@ if __name__ == "__main__":
 
 
     meta_study_config = {
-        #"algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2", "qaoa_nativegates_quantinuum_opt2", "qpeexact_nativegates_quantinuum_qiskit_opt2", "random_nativegates_quantinuum_qiskit_opt2"],
-        "algorithm_name": ["random_nativegates_quantinuum_qiskit_opt2"],
+        "algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2", "qaoa_nativegates_quantinuum_opt2", "qpeexact_nativegates_quantinuum_qiskit_opt2", "random_nativegates_quantinuum_qiskit_opt2"],
+        #"algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2"],
         # Core architecture parameters
-        'num_ions': [10,30,60],
-        'num_pzs': [8],
-        'ions_per_pz': [2],
+        'num_ions': [40],
+        #'num_pzs': [8],
+        #'ions_per_pz': [2],
         'grid_size': [4],
         'mz_trap_size': [4],
         #'pz_numbers_to_use': [[1,9,6,3,11,8]], 
@@ -896,9 +910,10 @@ if __name__ == "__main__":
         
         # Partitioning algorithm configurations
         'partitioning_algorithms': [
-            {'name': 'none'},  # No partitioning
+            #{'name': 'none'},  # No partitioning
             #fgp_tabu,
-            fgp_tabu_global,
+            #fgp_tabu_global,
+            fgp_tabu_global_2,
             #fgp_tabu_global_long,
             #fgp_tabu_global_test,
             #fgp_tabu_global_mini,
@@ -909,9 +924,20 @@ if __name__ == "__main__":
             #rehome
         ]
     }
+    # Default to config values when not explicitly swept in meta_study_config.
+    if "num_pzs" not in meta_study_config:
+        meta_study_config["num_pzs"] = [config.get("num_pzs", 1)]
+    if "ions_per_pz" not in meta_study_config:
+        meta_study_config["ions_per_pz"] = [config.get("max_ions_per_pz", 2)]
+
     dag_string = "WITHDAG" if True in meta_study_config.get("use_dag", []) else "NODAG"
-    unique_id = f"INSIDE_fgp_tabu_global_circ-random_final_dense_4"
-    unique_id += f"_{str(meta_study_config['num_pzs'])}pzs_{str(meta_study_config['ions_per_pz'])}perpz_{dag_string}"
+    #unique_id = f"INSIDE_fgp_tabu_global_circ-random_final_dense_4"
+    if "num_pzs" in meta_study_config and "ions_per_pz" in meta_study_config:
+        arch_string = Path(args.config_file).stem +"_"+f"{str(meta_study_config['num_pzs'])}pzs_{str(meta_study_config['ions_per_pz'])}perpz"
+    else:
+        arch_string = Path(args.config_file).stem +"_"+f"{str(config['num_pzs'])}pzs_{str(config['max_ions_per_pz'])}perpz"
+    unique_id = f"INSIDE_CalibrationAndProxy_" + arch_string
+    unique_id += f"_{dag_string}"
     clear_prev = False
 
     if unique_id != "":
