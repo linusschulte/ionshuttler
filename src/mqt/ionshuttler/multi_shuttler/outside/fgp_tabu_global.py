@@ -118,7 +118,7 @@ def fgp_tabu_global(
     pz_distance_map = _build_pz_distance_map(graph, pz_positions, graph_based_distance=graph_based_distance)
     if max_iterations is None and max_iterations_factor is not None:
         max_iterations = int(max_iterations_factor * num_qubits)
-    if not max_iterations or max_iterations <= 0:
+    if not max_iterations or max_iterations < 0:
         max_iterations = 100
     if not tabu_list_length or tabu_list_length <= 0:
         tabu_list_length = max(1, int(round(0.1 * max_iterations)))
