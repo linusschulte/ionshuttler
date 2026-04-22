@@ -25,6 +25,7 @@ docs/api/
 
 __pycache__/
 *.pyc
+*.out
 
 # development QASM files
 QASM_files/development
@@ -36,10 +37,21 @@ adapted_run_benchmarks.py
 /outputs
 /inputs
 
-
+notebooks/*
 notebooks/sandbox.ipynb
 notebooks/partitioning_comparison.ipynb
 
 notebooks/modify_qasm.ipynb
 debug.env
 src/mqt/ionshuttler/multi_shuttler/main3.py
+notebooks/partitioning_comparison.ipynb
+inputs/algorithms_heuristic/test.json
+vis_shuttle.py
+*.html
+.gitignore
+.gitignore
+vis_scheduling.py
+notebooks/normalize_qasm_registers.ipynb
+test.py
+notebooks/generate_random_circuit_qasm.ipynb
+notebooks/generate_random_circuit_qasm.ipynb
