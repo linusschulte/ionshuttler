@@ -118,9 +118,10 @@ def fgp_tabu_global(
     pz_names = [pz.name for pz in graph.pzs]
     pz_positions: Sequence[ProcessingZone | None] = [graph.pzs_name_map.get(name) for name in pz_names]
     pz_distance_map = _build_pz_distance_map(graph, pz_positions, graph_based_distance=graph_based_distance)
+
     if max_iterations is None and max_iterations_factor is not None:
         max_iterations = int(max_iterations_factor * num_qubits)
-    if not max_iterations or max_iterations < 0:
+    if max_iterations is None or max_iterations < 0:
         max_iterations = 100
     if not tabu_list_length or tabu_list_length <= 0:
         tabu_list_length = max(1, int(round(0.1 * max_iterations)))
@@ -239,6 +240,8 @@ def partition_slice(
 
     if not slice_gate_ids:
         raise ValueError("Slice must contain at least one gate to contract.")
+
+    
 
     required_edges = _build_edge_weights(slice_gate_ids, gate_info)
     required_unary = {
@@ -470,10 +473,10 @@ def tabu_optimize_global(
                 raise ValueError(f"Supernode {sn.id} assigned to invalid cluster {cluster}.")
             active_count = sum(1 for q in sn.qubits if q in active_qubits)
             active_load = sn.load if active_count > 0 else 0
-            if DEBUG_FLAG:
-                if active_count != active_load:
-                    print("Supernode:", sn.id, "qubits:", sn.qubits, "active qubits:", [q for q in sn.qubits if q in active_qubits])
-                    print("active_load before:", active_count, "after:", active_load)
+            #if DEBUG_FLAG:
+            #    if active_count != active_load:
+            #        print("Supernode:", sn.id, "qubits:", sn.qubits, "active qubits:", [q for q in sn.qubits if q in active_qubits])
+            #        print("active_load before:", active_count, "after:", active_load)
             active_counts[sn.id] = active_count
             active_loads[sn.id] = active_load
             counts[cluster] += active_count
@@ -541,6 +544,8 @@ def tabu_optimize_global(
     move_histograms_per_iteration: list[dict[float, int]] = []
     cost_history: list[float] = []
     for iteration in range(max_iterations):
+        #if DEBUG_FLAG:
+        #    print(f"---- ITERATION {iteration} ----")
         if (
             candidate_list_length is not None
             and refresh_every
@@ -1766,11 +1771,12 @@ def _greedy_initial_partition(
     assignment = [-1] * len(supernodes)
     cluster_loads = [0] * num_pzs
 
+
     if randomize_initial and seed is None:
         seed = random.randint(0, 1000)
 
-    if seed is not None:
-        rng = random.Random(seed)
+    if randomize_initial and seed is not None:
+        rng = random.Random(seed) #random.Random(seed)
         for sn in supernodes:
             target_cluster = rng.randrange(num_pzs)
             assignment[sn.id] = target_cluster
