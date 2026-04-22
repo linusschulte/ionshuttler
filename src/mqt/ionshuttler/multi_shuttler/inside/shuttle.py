@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import pathlib
 from datetime import datetime
+import time
 from typing import TYPE_CHECKING
 
 from .cycles import get_ion_chains
@@ -172,10 +173,25 @@ def shuttle(
         )
 
 
-def main(graph: Graph, cycle_or_paths: str, max_timesteps: int | None = None) -> int:
+def main(
+    graph: Graph,
+    cycle_or_paths: str,
+    max_timesteps: int | None = None,
+    max_seconds: float | None = None,
+    cache_shortest_paths: bool = True,
+) -> tuple[int, bool]:
     timestep = 0
     max_timesteps = int(max_timesteps) if max_timesteps is not None else int(1e6)
+    timed_out = False
+    start_time = time.monotonic()
     graph.state = get_ion_chains(graph)
+    # Configure shortest-path caching for this run.
+    graph.graph["_cache_shortest_paths"] = bool(cache_shortest_paths)
+    if cache_shortest_paths:
+        # Clear cached shortest paths from any previous runs on the same graph.
+        graph.graph.pop("_path_cache_node_to_edge", None)
+    else:
+        graph.graph.pop("_path_cache_node_to_edge", None)
 
     unique_folder = pathlib.Path("runs") / datetime.now().strftime("%Y%m%d_%H%M%S")
     if graph.save is True:
@@ -197,6 +213,10 @@ def main(graph: Graph, cycle_or_paths: str, max_timesteps: int | None = None) ->
     graph.locked_gates = {}
     graph.executed_gates_next = []
     while timestep < max_timesteps:
+        if max_seconds is not None and (time.monotonic() - start_time) >= max_seconds:
+            timed_out = True
+            print(f"\nTimeout after {max_seconds:.2f}s at timestep {timestep}.")
+            break
         if timestep % 10 == 0:
             print(f"\rTimestep: {timestep}/{int(max_timesteps)}", end="", flush=True)
         if DEBUG_FLAG:
@@ -346,6 +366,6 @@ def main(graph: Graph, cycle_or_paths: str, max_timesteps: int | None = None) ->
 
         timestep += 1
 
-    print(f"\rTimestep: {timestep}/{int(max_timesteps)}", end="", flush=True)
+    print(f"\rTimestep: {timestep}/{int(max_timesteps)}. Shuttling duration: {(time.monotonic() - start_time)}s", end="", flush=True)
     print()
-    return timestep
+    return timestep, timed_out

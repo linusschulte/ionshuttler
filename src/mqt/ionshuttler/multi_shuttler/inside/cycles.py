@@ -16,6 +16,23 @@ if TYPE_CHECKING:
     from .types import Edge, Node
 
 
+def _normalize_edge(edge: Edge) -> Edge:
+    # Keep edge ordering consistent for cache keys.
+    return tuple(sorted(edge, key=sum))
+
+
+def _cache_enabled(graph: Graph) -> bool:
+    return graph.graph.get("_cache_shortest_paths", True)
+
+
+def _get_path_cache(graph: Graph) -> dict[tuple[Node, Edge], list[Node]]:
+    cache = graph.graph.get("_path_cache_node_to_edge")
+    if cache is None:
+        cache = {}
+        graph.graph["_path_cache_node_to_edge"] = cache
+    return cache
+
+
 def create_starting_config(graph: Graph, n_of_chains: int, seed: int | None = None) -> int:
     # Initialize ions on edges using an edge attribute
     nx.set_edge_attributes(graph, {edge: [] for edge in graph.edges}, "ions")
@@ -140,21 +157,31 @@ def check_if_edge_is_filled(graph: Graph, edge_idc: Edge) -> bool:
 
 
 def find_path_node_to_edge(graph: Graph, node: Node, goal_edge: Edge) -> list[Node]:
-    # manipulate graph weights
-    original_weight = graph[goal_edge[0]][goal_edge[1]].get("weight", 1)
-    # set weight of goal edge to inf (so it can't move past the edge)
-    graph[goal_edge[0]][goal_edge[1]]["weight"] = float("inf")
+    goal_edge = _normalize_edge(goal_edge)
+    use_cache = _cache_enabled(graph)
+    cache: dict[tuple[Node, Edge], list[Node]] | None = None
+    if use_cache:
+        cache = _get_path_cache(graph)
+        cached = cache.get((node, goal_edge))
+        if cached is not None:
+            return cached
+
+    def weight(u: Node, v: Node, d: dict) -> float:
+        if (u, v) == goal_edge or (v, u) == goal_edge:
+            return float("inf")
+        return d.get("weight", 1)
 
     # find shortest path towards both sides (nodes of goal edge)
-    path0 = nx.shortest_path(graph, node, goal_edge[0], weight="weight")
-    path1 = nx.shortest_path(graph, node, goal_edge[1], weight="weight")
-
-    # restore the original weight of the edge
-    graph[goal_edge[0]][goal_edge[1]]["weight"] = original_weight
+    path0 = nx.shortest_path(graph, node, goal_edge[0], weight=weight)
+    path1 = nx.shortest_path(graph, node, goal_edge[1], weight=weight)
 
     # return min path
     if len(path1) < len(path0):
+        if cache is not None:
+            cache[(node, goal_edge)] = path1
         return path1
+    if cache is not None:
+        cache[(node, goal_edge)] = path0
     return path0
 
 

@@ -190,6 +190,8 @@ def main(config: dict[str, Any]):
     optimize_params = config.get("optimize_params", False)
     optimization_budget = float(config.get("optimization_budget", 3.0))
     plot_move_hist = bool(config.get("plot_move_hist", False))
+    max_shuttle_seconds = config.get("max_shuttle_seconds", 1800)
+    cache_shortest_paths = bool(config.get("cache_shortest_paths", True))
 
 
     if arch is None or not isinstance(arch, list) or len(arch) != 4:
@@ -601,11 +603,14 @@ def main(config: dict[str, Any]):
     print("\nStarted inside shuttling simulation...")
     #final_timesteps = run_shuttle_main(graph, graph.sequence.copy(), cycle_or_paths_str)
     interrupted = False
+    timed_out = False
     try:
-        final_timesteps = run_shuttle_main(
+        final_timesteps, timed_out = run_shuttle_main(
             graph,
             cycle_or_paths_str,
             max_timesteps=max_timesteps,
+            max_seconds=max_shuttle_seconds,
+            cache_shortest_paths=cache_shortest_paths,
         )
     except KeyboardInterrupt:
         interrupted = True
@@ -624,6 +629,7 @@ def main(config: dict[str, Any]):
 
     return (
         final_timesteps,
+        timed_out,
         cpu_time,
         timesteps_lower_bound,
         cost_before,
@@ -641,6 +647,7 @@ def execute_run(
     config: dict[str, Any],
 ) -> tuple[
     int,
+    bool,
     timedelta,
     int,
     float | None,
@@ -662,7 +669,7 @@ def execute_run(
     if should_use_legacy_cli(config_for_run):
         print("Using legacy CLI entrypoint (mqt-ionshuttler-heuristic) for this configuration.")
         final_ts, cpu_time = run_legacy_cli_with_config(config_for_run)
-        return final_ts, cpu_time, 0, None, None, [], [], None, None, 0, 0
+        return final_ts, False, cpu_time, 0, None, None, [], [], None, None, 0, 0
     return main(config_for_run)
 
     # # --- Benchmarking Output ---
@@ -798,80 +805,53 @@ if __name__ == "__main__":
         'params': {
             'balance_penalty': [0.5], # np.linspace(0.1, 5, 40),  #[0.5],
             'distance_weight_factor': [1.0], #np.linspace(0.1, 5, 20),  #[1.0],
-            'max_iterations_factor': [0, 20, 50], 
+            #'max_iterations_factor': [25], 
+            'max_iterations': [0, 100, 1000, 10000],
             #'tabu_list_length': [200],
             'seed': range(5),
             'candidate_list_length': [None],
             'relaxed_layering': [False],
         },
     }
-    fgp_tabu_global_2 = {
+    fgp_tabu_global_2_capacity = {
         'name': 'fgp_tabu_global_2',
         'params': {
-            'balance_penalty': [0, 0.1], #[0, 0.01, 0.05, 0.1, 0.5], #[0.6],
+            'balance_penalty': [0], #[0, 0.01, 0.05, 0.1, 0.5], #[0.6],
             'distance_weight_factor': [1.0],  #[1.5],
-            'capacity_weight': [0, 0.1], #[0, 0.01, 0.05, 0.1, 0.5],  #[1.0],
-            'max_iterations_factor': [0,20], 
+            'capacity_weight': [0.1, 0.15, 0.2, 0.25],#[0.0, 0.025, 0.05, 0.075, 0.1, 0.125, 0.15, 0.175, 0.2], #[0, 0.01, 0.05, 0.1, 0.5],  #[1.0],
+            'max_iterations_factor': [25,50,100],#[0, 25, 50, 100, 200],# 100], 
             #'tabu_list_length': [200],
             'seed': range(3),
             'candidate_list_length': [None],
             'relaxed_layering': [True]#, False],
         },
     }
-    fgp_tabu_global_long = {
-        'name': 'fgp_tabu_global',
+    fgp_tabu_global_2_dense = {
+        'name': 'fgp_tabu_global_2',
         'params': {
-            'balance_penalty': [0.5], #np.linspace(0.1, 5, 40),  #[0.6],
-            #'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
-            'max_iterations_factor': [50], 
+            'balance_penalty': [0], #[0, 0.01, 0.05, 0.1, 0.5], #[0.6],
+            'distance_weight_factor': [1.0],  #[1.5],
+            'capacity_weight': [0.5],#[0.0, 0.025, 0.05, 0.075, 0.1, 0.125, 0.15, 0.175, 0.2], #[0, 0.01, 0.05, 0.1, 0.5],  #[1.0],
+            'max_iterations_factor': [50],#[0, 25, 50, 100, 200],# 100], 
+            #'max_iterations': [10000],#[0, 100, 1000, 10000],
             #'tabu_list_length': [200],
-            'seed': range(5),
+            'seed': range(1),
             'candidate_list_length': [None],
+            'relaxed_layering': [True]#, False],
         },
     }
-    fgp_tabu_global_test = {
-        'name': 'fgp_tabu_global',
+    fgp_tabu_global_2_racetrack = {
+        'name': 'fgp_tabu_global_2',
         'params': {
-            'balance_penalty': [0.5], #np.linspace(0.1, 5, 40),  #[0.6],
-            #'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
-            'max_iterations_factor': [20], 
+            'balance_penalty': [0], #[0, 0.01, 0.05, 0.1, 0.5], #[0.6],
+            'distance_weight_factor': [1.0],  #[1.5],
+            'capacity_weight': [0.1],#[0.0, 0.025, 0.05, 0.075, 0.1, 0.125, 0.15, 0.175, 0.2], #[0, 0.01, 0.05, 0.1, 0.5],  #[1.0],
+            'max_iterations_factor': [50],#[0, 25, 50, 100, 200],# 100], 
+            #'max_iterations': [0, 100, 1000, 10000],
             #'tabu_list_length': [200],
-            'seed': range(5),
+            'seed': range(1),
             'candidate_list_length': [None],
-        },
-    }
-    fgp_tabu_global_mini = {
-        'name': 'fgp_tabu_global',
-        'params': {
-            'balance_penalty': [5], #np.linspace(0.1, 5, 40),  #[0.6],
-            'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
-            'max_iterations':   [2500], #list(range(0, 500+1, 100)),
-            'tabu_list_length': [200],
-            'seed': range(3),
-            'candidate_list_length': [300],
-        },
-    }
-    fgp_tabu_global_mini_quota = {
-        'name': 'fgp_tabu_global',
-        'params': {
-            'balance_penalty': [5], #np.linspace(0.1, 5, 40),  #[0.6],
-            'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
-            'max_iterations':   [2500], #list(range(0, 500+1, 100)),
-            'tabu_list_length': [200],
-            'seed': range(3),
-            'candidate_list_length': [200],
-            'per_slice_quota': [1],
-        },
-    }
-    fgp_tabu_global_slack = {
-        'name': 'fgp_tabu_global',
-        'params': {
-            'balance_penalty': [5], #np.linspace(0.1, 5, 40),  #[0.6],
-            'distance_weight_factor': [1], #np.linspace(0.1, 5, 20)  #[1.5],
-            'max_iterations':   [1000], #list(range(0, 500+1, 100)),
-            'tabu_list_length': [200],
-            'seed': range(3),
-            'slack_dropoff' : [1],
+            'relaxed_layering': [True]#, False],
         },
     }
     fgp_kl = {
@@ -891,8 +871,9 @@ if __name__ == "__main__":
     meta_study_config = {
         "algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2", "qaoa_nativegates_quantinuum_opt2", "qpeexact_nativegates_quantinuum_qiskit_opt2", "random_nativegates_quantinuum_qiskit_opt2"],
         #"algorithm_name": ["qft_nativegates_quantinuum_qiskit_opt2"],
+        #"algorithm_name" : ["random_nativegates_quantinuum_qiskit_opt2"],
         # Core architecture parameters
-        'num_ions': [40],
+        'num_ions': [30],
         #'num_pzs': [8],
         #'ions_per_pz': [2],
         'grid_size': [4],
@@ -913,7 +894,9 @@ if __name__ == "__main__":
             #{'name': 'none'},  # No partitioning
             #fgp_tabu,
             #fgp_tabu_global,
-            fgp_tabu_global_2,
+            #fgp_tabu_global_2_dense,
+            #fgp_tabu_global_2_racetrack,
+            fgp_tabu_global_2_capacity,
             #fgp_tabu_global_long,
             #fgp_tabu_global_test,
             #fgp_tabu_global_mini,
@@ -936,13 +919,19 @@ if __name__ == "__main__":
         arch_string = Path(args.config_file).stem +"_"+f"{str(meta_study_config['num_pzs'])}pzs_{str(meta_study_config['ions_per_pz'])}perpz"
     else:
         arch_string = Path(args.config_file).stem +"_"+f"{str(config['num_pzs'])}pzs_{str(config['max_ions_per_pz'])}perpz"
-    unique_id = f"INSIDE_CalibrationAndProxy_" + arch_string
+    
+    ##############################################################
+    unique_id = f"INSIDE_HyperStudy" + "_" + arch_string
     unique_id += f"_{dag_string}"
     clear_prev = False
+
 
     if unique_id != "":
         #stamp = datetime.now().strftime("%Y%m%d_%H")
         results_file = f"outputs/results/simulation_results_{unique_id}.h5"
+
+
+
 
     # Clear previous results if requested
     if clear_prev and pathlib.Path(results_file).exists():
@@ -1175,6 +1164,7 @@ if __name__ == "__main__":
                 try:
                     (
                         final_timesteps,
+                        timed_out,
                         cpu_time,
                         timesteps_lower_bound,
                         cost_before,
@@ -1190,7 +1180,12 @@ if __name__ == "__main__":
                     print("move_distance_total:", move_distance_total)
 
                     max_timesteps = _resolve_max_timesteps(config, config.get("num_ions"))
-                    if final_timesteps >= max_timesteps - 1:
+                    if timed_out:
+                        run_group.attrs['success'] = False
+                        run_group.attrs['error_message'] = (
+                            f"Compilation time limit of {config["max_shuttle_seconds"]}s reached at timestep {final_timesteps}/{max_timesteps}"
+                        )
+                    elif final_timesteps >= max_timesteps - 1:
                         run_group.attrs['success'] = False
                         run_group.attrs['error_message'] = (
                             f"Simulation reached max timesteps ({final_timesteps})"
