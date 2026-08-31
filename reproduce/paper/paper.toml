@@ -1,0 +1,172 @@
+# Copyright (c) 2023 - 2026 Chair for Design Automation, TUM
+# All rights reserved.
+#
+# SPDX-License-Identifier: MIT
+#
+# Licensed under the MIT License
+
+# Parameters for the DD/SADD paper reproduction harness.
+# `quick` changes only case_count, samples, and grids in the [quick] table.
+
+[architecture]
+num_sites = 9
+processing_zones = { pz1 = [2, 3], pz2 = [5, 6] }
+profile_site_field = [16.0, 8.0, 4.0, 1.0, 0.0, 1.0, 4.0, 8.0, 16.0]
+
+[compiler]
+horizon = 3
+committed_gates = 2
+max_frontier_size = 1000
+max_compile_time = 1800.0
+iterative_diving_search = true
+informed_action_prioritization = false
+use_dependencies = true
+shuttle_duration = 1
+swap_duration = 3
+rx_duration = 1
+ry_duration = 1
+rz_duration = 0
+rzz_duration = 2
+
+[dd]
+min_window_length = 2
+max_window_length = 16
+max_participating_ions = 5
+timeout_seconds = 1.0
+num_search_workers = 4
+
+[simulation]
+dt_seconds = 0.0001
+samples = 64
+bootstrap_samples = 10000
+max_bond_dimension = 128
+svd_threshold = 1e-12
+seed = 1234
+dephasing_correlation_time_steps = 10000.0
+dephasing_correlation_length_sites = 2.0
+pulse_area_std = 0.001
+axis_tilt_std_degrees = 0.05
+heating_noise_scale = 0.001
+
+[sweeps]
+detuning = [0.03, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0]
+control = [0.0, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0]
+heating = [0.0, 0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.1]
+temporal_correlation_steps = [0.1, 1.0, 10.0, 100.0, 1000.0, 10000.0]
+spatial_correlation_sites = [0.3, 1.0, 3.0, 10.0, 30.0, 100.0]
+fixed_detuning = 10.0
+fixed_control = 1.0
+selected_heating = 0.001
+profile_detuning = 3.0
+profile_heating = [0.0, 0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.1]
+
+[[cases]]
+family = "ising"
+qubits = 4
+seed = 0
+
+[[cases]]
+family = "qft"
+qubits = 4
+seed = 0
+
+[[cases]]
+family = "random"
+qubits = 4
+seed = 0
+
+[[cases]]
+family = "ising"
+qubits = 5
+seed = 0
+
+[[cases]]
+family = "qft"
+qubits = 5
+seed = 0
+
+[[cases]]
+family = "random"
+qubits = 5
+seed = 0
+
+[[cases]]
+family = "ising"
+qubits = 6
+seed = 0
+
+[[cases]]
+family = "qft"
+qubits = 6
+seed = 0
+
+[[cases]]
+family = "random"
+qubits = 6
+seed = 0
+
+[[cases]]
+family = "ising"
+qubits = 8
+seed = 0
+
+[[cases]]
+family = "qft"
+qubits = 8
+seed = 0
+
+[[cases]]
+family = "random"
+qubits = 8
+seed = 0
+
+[[cases]]
+family = "qpe"
+qubits = 4
+seed = 0
+
+[[cases]]
+family = "qpe"
+qubits = 5
+seed = 0
+
+[[cases]]
+family = "qpe"
+qubits = 6
+seed = 0
+
+[[cases]]
+family = "qpe"
+qubits = 8
+seed = 0
+
+[[cases]]
+family = "ghz"
+qubits = 4
+seed = 0
+
+[[cases]]
+family = "ghz"
+qubits = 5
+seed = 0
+
+[[cases]]
+family = "ghz"
+qubits = 6
+seed = 0
+
+[[cases]]
+family = "ghz"
+qubits = 8
+seed = 0
+
+[quick]
+case_count = 1
+samples = 1
+bootstrap_samples = 500
+detuning = [3.0]
+control = [1.0]
+heating = [0.001]
+profile_heating = [0.001]
+temporal_correlation_steps = [10.0, 10000.0]
+spatial_correlation_sites = [0.5, 8.0]

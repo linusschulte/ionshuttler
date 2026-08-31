@@ -178,6 +178,8 @@ future-annotations = true
 known-first-party = ["mqt.ionshuttler"]
 
 [tool.ruff.lint.per-file-ignores]
+"reproduce/paper/run.py" = ["PLC0415", "T201"]
+"reproduce/paper/simulation.py" = ["PLC0415"]
 "src/mqt/ionshuttler/multi_shuttler/**" = [
   "ANN",
   "ARG001",
@@ -263,6 +265,11 @@ git-only = [
 
 
 [dependency-groups]
+paper = [
+    "mqt-bench==2.2.3",
+    "mqt-yaqs==0.6.0",
+    "mqt-ionshuttler[dd]",
+]
 docs = [
     "furo>=2025.09.25",
     "myst-nb>=1.3.0",

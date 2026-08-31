@@ -39,9 +39,11 @@ QASM_files/development
 benchmarks/
 runs/
 paper_run_files/
+reproduce/paper/output/
 
 *.pyc
 
 run.py
+!reproduce/paper/run.py
 adapted_run_benchmarks.py
 timeline.json
