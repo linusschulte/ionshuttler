@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import math
+import sys
 import time
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -22,6 +24,7 @@ import numpy as np
 from qiskit import QuantumCircuit
 
 from mqt.ionshuttler.linear import (
+    ActionSchedule,
     Architecture,
     CompilationStatus,
     GateTiming,
@@ -49,6 +52,7 @@ from reproduce.paper.analysis import (
     summarize_infidelities,
     write_csv,
 )
+from reproduce.paper.checkpoint import CheckpointStore
 from reproduce.paper.plots import render_all
 from reproduce.paper.simulation import (
     PaperNoise,
@@ -60,8 +64,6 @@ from reproduce.paper.simulation import (
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
-
-    from mqt.ionshuttler.linear import ActionSchedule
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = Path(__file__).with_name("paper.toml")
@@ -107,36 +109,136 @@ class MethodAudit:
     report: object | None = None
 
 
+@dataclass(frozen=True)
+class CompiledCase:
+    """Schedules and static analysis retained across sample-major execution."""
+
+    case: Case
+    schedules: Mapping[str, tuple[ActionSchedule, frozenset[int]]]
+    aware_full: tuple[ActionSchedule, frozenset[int]]
+    references: Mapping[str, QuantumCircuit]
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the reproduction command.
 
     Returns:
         A successful process status.
 
-    Raises:
-        RuntimeError: If compilation or a DD pass cannot produce a schedule.
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("quick", "paper"))
     parser.add_argument("--output", type=Path, required=True, help="fresh or replaceable output directory")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("--samples", type=int, help="target deterministic sample prefix (may extend a checkpoint)")
     args = parser.parse_args(argv)
     config = _load_config(args.config)
     settings = _settings(config, args.mode)
+    if args.samples is not None:
+        if args.samples <= 0:
+            parser.error("--samples must be positive")
+        settings = replace(settings, samples=args.samples)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
 
     architecture, profile_architecture = _architectures(_table(config, "architecture"))
-    compiler = _compiler(architecture, _table(config, "compiler"))
-    dd_config = _dd_config(_table(config, "dd"))
     simulation_config = _table(config, "simulation")
     sweep_config = _table(config, "sweeps")
 
-    raw_rows: list[RawRow] = []
-    proxy_temporal: list[RawRow] = []
-    proxy_spatial: list[RawRow] = []
+    checkpoint = CheckpointStore(
+        output,
+        _run_identity(config, settings),
+        _expected_rows_per_sample(settings),
+    )
+    checkpoint.validate_identity()
+    if checkpoint.exists:
+        print("restoring exact compiled schedules from checkpoint", flush=True)
+        compiled_cases, schedule_rows, opportunity_rows, proxy_temporal, proxy_spatial = _restore_compiled_cases(
+            checkpoint.load_compiled(), architecture
+        )
+    else:
+        compiled_cases, schedule_rows, opportunity_rows, proxy_temporal, proxy_spatial, fingerprints = _compile_cases(
+            settings,
+            architecture,
+            profile_architecture,
+            _compiler(architecture, _table(config, "compiler")),
+            _dd_config(_table(config, "dd")),
+            simulation_config,
+        )
+        checkpoint.prepare(
+            fingerprints,
+            _compiled_payload(compiled_cases, schedule_rows, opportunity_rows, proxy_temporal, proxy_spatial),
+        )
+    temporal = _average_proxy(proxy_temporal, "tau_steps")
+    spatial = _average_proxy(proxy_spatial, "ell_sites")
+    completed = checkpoint.completed_samples()
+    preview_samples = 0
+    for sample in range(settings.samples):
+        if sample in completed:
+            print(f"[sample {sample + 1}/{settings.samples}] checkpoint complete; skipping", flush=True)
+            continue
+        sample_rows: list[RawRow] = []
+        for case_index, compiled in enumerate(compiled_cases, start=1):
+            print(
+                f"[sample {sample + 1}/{settings.samples}][{case_index}/{len(compiled_cases)}] "
+                f"simulating {compiled.case.name}",
+                flush=True,
+            )
+            sample_rows.extend(
+                _simulate_case_sample(
+                    compiled,
+                    sample,
+                    architecture,
+                    profile_architecture,
+                    simulation_config,
+                    sweep_config,
+                    settings,
+                )
+            )
+        shard = checkpoint.commit(sample, sample_rows)
+        completed = completed.union((sample,))
+        print(f"committed {shard}", flush=True)
+        _write_outputs(
+            checkpoint.load_prefix(sample + 1),
+            schedule_rows,
+            opportunity_rows,
+            temporal,
+            spatial,
+            sweep_config,
+            simulation_config,
+            replace(settings, samples=sample + 1),
+            output,
+        )
+        preview_samples = sample + 1
+    if preview_samples != settings.samples:
+        _write_outputs(
+            checkpoint.load_prefix(settings.samples),
+            schedule_rows,
+            opportunity_rows,
+            temporal,
+            spatial,
+            sweep_config,
+            simulation_config,
+            settings,
+            output,
+        )
+    return 0
+
+
+def _compile_cases(
+    settings: RunSettings,
+    architecture: Architecture,
+    profile_architecture: Architecture,
+    compiler: LinearCompiler,
+    dd_config: SADDConfig,
+    simulation: Mapping[str, object],
+) -> tuple[list[CompiledCase], list[RawRow], list[RawRow], list[RawRow], list[RawRow], dict[str, str]]:
+    compiled_cases: list[CompiledCase] = []
     schedule_rows: list[RawRow] = []
     opportunity_rows: list[RawRow] = []
+    proxy_temporal: list[RawRow] = []
+    proxy_spatial: list[RawRow] = []
+    fingerprints: dict[str, str] = {}
     for case_index, case in enumerate(settings.cases, start=1):
         print(f"[{case_index}/{len(settings.cases)}] compiling {case.name}", flush=True)
         result = compiler.compile(_make_circuit(case))
@@ -145,55 +247,240 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError(msg)
         schedules, audits, case_opportunities = _schedule_variants(result.schedule, architecture, dd_config)
         aware_full = _full_sadd(result.schedule, profile_architecture, dd_config)
+        compiled_cases.append(_compiled_case(case, schedules, aware_full, architecture))
+        fingerprints[case.name] = _schedule_fingerprint(schedules, aware_full)
         schedule_rows.extend(
             _schedule_audit_rows(
                 case,
                 schedules,
                 audits,
                 architecture,
-                dt_seconds=_number(simulation_config, "dt_seconds"),
-                temporal_corr=_number(simulation_config, "dephasing_correlation_time_steps"),
+                dt_seconds=_number(simulation, "dt_seconds"),
+                temporal_corr=_number(simulation, "dephasing_correlation_time_steps"),
             )
         )
         opportunity_rows.extend({"case": case.name, "family": case.family, **row} for row in case_opportunities)
-        print(f"[{case_index}/{len(settings.cases)}] simulating {case.name}", flush=True)
-        raw_rows.extend(
-            _simulate_case(
-                case,
-                schedules,
-                aware_full,
-                architecture,
-                profile_architecture,
-                simulation_config,
-                sweep_config,
-                settings,
-            )
-        )
         temporal, spatial = covariance_proxy_rows(
             schedules,
             architecture,
             temporal_scales=settings.temporal_scales,
             spatial_scales=settings.spatial_scales,
-            dt_seconds=_number(simulation_config, "dt_seconds"),
+            dt_seconds=_number(simulation, "dt_seconds"),
         )
         proxy_temporal.extend({"case": case.name, **row} for row in temporal)
         proxy_spatial.extend({"case": case.name, **row} for row in spatial)
+    return compiled_cases, schedule_rows, opportunity_rows, proxy_temporal, proxy_spatial, fingerprints
 
+
+def _compiled_case(
+    case: Case,
+    schedules: Mapping[str, tuple[ActionSchedule, frozenset[int]]],
+    aware_full: tuple[ActionSchedule, frozenset[int]],
+    architecture: Architecture,
+) -> CompiledCase:
+    references = {
+        method: build_reference_circuit(schedule, architecture, local_action_ids=local_ids)
+        for method, (schedule, local_ids) in schedules.items()
+    }
+    references["ProfileAwareFullSADD"] = build_reference_circuit(
+        aware_full[0],
+        architecture,
+        local_action_ids=aware_full[1],
+    )
+    return CompiledCase(case, schedules, aware_full, references)
+
+
+def _compiled_payload(
+    compiled_cases: Sequence[CompiledCase],
+    schedule_rows: Sequence[RawRow],
+    opportunity_rows: Sequence[RawRow],
+    proxy_temporal: Sequence[RawRow],
+    proxy_spatial: Sequence[RawRow],
+) -> dict[str, object]:
+    cases: list[dict[str, object]] = []
+    for compiled in compiled_cases:
+        schedules = {
+            method: {"schedule": schedule.to_dict(), "local_action_ids": sorted(local_ids)}
+            for method, (schedule, local_ids) in compiled.schedules.items()
+        }
+        cases.append({
+            "case": {
+                "family": compiled.case.family,
+                "qubits": compiled.case.qubits,
+                "seed": compiled.case.seed,
+            },
+            "schedules": schedules,
+            "aware_full": {
+                "schedule": compiled.aware_full[0].to_dict(),
+                "local_action_ids": sorted(compiled.aware_full[1]),
+            },
+        })
+    return {
+        "cases": cases,
+        "schedule_rows": list(schedule_rows),
+        "opportunity_rows": list(opportunity_rows),
+        "proxy_temporal": list(proxy_temporal),
+        "proxy_spatial": list(proxy_spatial),
+    }
+
+
+def _restore_compiled_cases(
+    payload: Mapping[str, object], architecture: Architecture
+) -> tuple[list[CompiledCase], list[RawRow], list[RawRow], list[RawRow], list[RawRow]]:
+    raw_cases = _checkpoint_list(payload, "cases")
+    compiled_cases: list[CompiledCase] = []
+    for raw_case in raw_cases:
+        entry = _checkpoint_mapping(raw_case, "each compiled case")
+        case_data = _checkpoint_mapping(entry.get("case"), "compiled case metadata")
+        family = case_data.get("family")
+        qubits = case_data.get("qubits")
+        seed = case_data.get("seed")
+        if not isinstance(family, str) or not isinstance(qubits, int) or not isinstance(seed, int):
+            msg = "compiled case metadata is malformed"
+            raise TypeError(msg)
+        case = Case(family, qubits, seed)
+        raw_schedules = _checkpoint_mapping(entry.get("schedules"), "compiled schedules")
+        schedules = {
+            method: _restore_schedule(_checkpoint_mapping(value, f"compiled {method} schedule"))
+            for method, value in raw_schedules.items()
+        }
+        aware_full = _restore_schedule(_checkpoint_mapping(entry.get("aware_full"), "profile-aware schedule"))
+        compiled_cases.append(_compiled_case(case, schedules, aware_full, architecture))
+    return (
+        compiled_cases,
+        _checkpoint_rows(payload, "schedule_rows"),
+        _checkpoint_rows(payload, "opportunity_rows"),
+        _checkpoint_rows(payload, "proxy_temporal"),
+        _checkpoint_rows(payload, "proxy_spatial"),
+    )
+
+
+def _restore_schedule(value: Mapping[str, object]) -> tuple[ActionSchedule, frozenset[int]]:
+    raw_ids = value.get("local_action_ids")
+    if not isinstance(raw_ids, list) or any(not isinstance(action_id, int) for action_id in raw_ids):
+        msg = "compiled local_action_ids must be an integer array"
+        raise TypeError(msg)
+    try:
+        schedule = ActionSchedule.from_dict(value.get("schedule"))
+    except (TypeError, ValueError) as error:
+        msg = "cannot restore compiled action schedule"
+        raise RuntimeError(msg) from error
+    return schedule, frozenset(raw_ids)
+
+
+def _checkpoint_mapping(value: object, label: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        msg = f"{label} must be an object"
+        raise TypeError(msg)
+    return cast("dict[str, object]", value)
+
+
+def _checkpoint_list(payload: Mapping[str, object], name: str) -> list[object]:
+    value = payload.get(name)
+    if not isinstance(value, list):
+        msg = f"compiled checkpoint field {name!r} must be an array"
+        raise TypeError(msg)
+    return value
+
+
+def _checkpoint_rows(payload: Mapping[str, object], name: str) -> list[RawRow]:
+    rows = _checkpoint_list(payload, name)
+    if any(not isinstance(row, dict) for row in rows):
+        msg = f"compiled checkpoint field {name!r} must contain objects"
+        raise TypeError(msg)
+    return cast("list[RawRow]", rows)
+
+
+def _run_identity(config: Mapping[str, object], settings: RunSettings) -> dict[str, object]:
+    simulation = dict(_table(config, "simulation"))
+    simulation.pop("samples", None)
+    simulation.pop("bootstrap_samples", None)
+    scientific_inputs = {
+        "mode": settings.mode,
+        "cases": [{"family": case.family, "qubits": case.qubits, "seed": case.seed} for case in settings.cases],
+        "detunings": settings.detunings,
+        "controls": settings.controls,
+        "heating": settings.heating,
+        "profile_heating": settings.profile_heating,
+        "temporal_scales": settings.temporal_scales,
+        "spatial_scales": settings.spatial_scales,
+        "architecture": _table(config, "architecture"),
+        "compiler": _table(config, "compiler"),
+        "dd": _table(config, "dd"),
+        "simulation": simulation,
+        "sweeps": _table(config, "sweeps"),
+    }
+    implementation = hashlib.sha256()
+    paper_paths = [
+        Path(__file__).with_name(name)
+        for name in ("analysis.py", "checkpoint.py", "plots.py", "run.py", "simulation.py")
+    ]
+    linear_paths = sorted((ROOT / "src" / "mqt" / "ionshuttler" / "linear").rglob("*.py"))
+    for path in (*paper_paths, ROOT / "uv.lock", *linear_paths):
+        implementation.update(str(path.relative_to(ROOT)).encode())
+        implementation.update(path.read_bytes())
+    return {
+        "mode": settings.mode,
+        "python": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        "scientific_inputs_sha256": _json_sha256(scientific_inputs),
+        "implementation_sha256": implementation.hexdigest(),
+    }
+
+
+def _json_sha256(value: object) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _schedule_fingerprint(
+    schedules: Mapping[str, tuple[ActionSchedule, frozenset[int]]],
+    aware_full: tuple[ActionSchedule, frozenset[int]],
+) -> str:
+    payload = {
+        method: {"schedule": schedule.to_dict(), "local_action_ids": sorted(local_ids)}
+        for method, (schedule, local_ids) in schedules.items()
+    }
+    payload["ProfileAwareFullSADD"] = {
+        "schedule": aware_full[0].to_dict(),
+        "local_action_ids": sorted(aware_full[1]),
+    }
+    return _json_sha256(payload)
+
+
+def _expected_rows_per_sample(settings: RunSettings) -> int:
+    routing_detunings = _panel_detunings(settings.detunings)
+    per_case = (
+        len(settings.detunings) * len(settings.controls) * len(METHODS)
+        + len(routing_detunings) * len(settings.heating) * len(ROUTING_METHODS)
+        + len(routing_detunings) * len(settings.profile_heating) * 4
+    )
+    return len(settings.cases) * per_case
+
+
+def _write_outputs(
+    raw_rows: Sequence[RawRow],
+    schedule_rows: Sequence[RawRow],
+    opportunity_rows: Sequence[RawRow],
+    temporal: Sequence[RawRow],
+    spatial: Sequence[RawRow],
+    sweeps: Mapping[str, object],
+    simulation: Mapping[str, object],
+    settings: RunSettings,
+    output: Path,
+) -> None:
     per_case = summarize_infidelities(raw_rows)
     aggregate = summarize_across_cases(
         per_case,
         bootstrap_samples=settings.bootstrap_samples,
-        seed=_integer(simulation_config, "seed"),
+        seed=_integer(simulation, "seed"),
     )
-    temporal = _average_proxy(proxy_temporal, "tau_steps")
-    spatial = _average_proxy(proxy_spatial, "ell_sites")
-    table_ii = _table_ii_rows(per_case, schedule_rows, sweep_config, settings)
+    table_ii = _table_ii_rows(per_case, schedule_rows, sweeps, settings)
     objective = _objective_fidelity_rows(
         per_case,
         schedule_rows,
-        sweep_config,
+        sweeps,
         settings,
-        seed=_integer(simulation_config, "seed"),
+        seed=_integer(simulation, "seed"),
     )
     csv_dir = output / "csv"
     write_csv(csv_dir / "raw_trajectories.csv", raw_rows)
@@ -205,7 +492,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     write_csv(csv_dir / "objective_fidelity.csv", objective)
     write_csv(csv_dir / "temporal_applicability.csv", temporal)
     write_csv(csv_dir / "spatial_applicability.csv", spatial)
-    print("rendering six manuscript result figures", flush=True)
+    print(f"rendering preview from {settings.samples} completed sample(s)", flush=True)
     figures = render_all(
         aggregate,
         per_case,
@@ -219,7 +506,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("generated:", flush=True)
     for path in sorted((*csv_dir.glob("*.csv"), *figures)):
         print(f"  {path}", flush=True)
-    return 0
 
 
 def _load_config(path: Path) -> dict[str, object]:
@@ -645,10 +931,9 @@ def _objective_fidelity_rows(
     return output
 
 
-def _simulate_case(
-    case: Case,
-    schedules: Mapping[str, tuple[ActionSchedule, frozenset[int]]],
-    aware_full: tuple[ActionSchedule, frozenset[int]],
+def _simulate_case_sample(
+    compiled: CompiledCase,
+    sample: int,
     architecture: Architecture,
     profile_architecture: Architecture,
     sim: Mapping[str, object],
@@ -658,56 +943,65 @@ def _simulate_case(
     rows: list[RawRow] = []
     for detuning in settings.detunings:
         for control in settings.controls:
-            for method in METHODS:
-                rows.extend(
-                    _trajectory_rows(
-                        case,
-                        "operating_envelope",
-                        method,
-                        schedules[method],
-                        architecture,
-                        sim,
-                        settings.samples,
-                        detuning,
-                        control,
-                        0.0,
-                        "flat",
-                    )
+            rows.extend(
+                _trajectory_row(
+                    compiled.case,
+                    "operating_envelope",
+                    method,
+                    compiled.schedules[method],
+                    compiled.references[method],
+                    architecture,
+                    sim,
+                    sample,
+                    detuning,
+                    control,
+                    0.0,
+                    "flat",
                 )
+                for method in METHODS
+            )
     routing_detunings = _panel_detunings(settings.detunings)
     fixed_control = _number(sweeps, "fixed_control")
     for detuning in routing_detunings:
         for heating in settings.heating:
-            for method in ROUTING_METHODS:
-                rows.extend(
-                    _trajectory_rows(
-                        case,
-                        "control_heating",
-                        method,
-                        schedules[method],
-                        architecture,
-                        sim,
-                        settings.samples,
-                        detuning,
-                        fixed_control,
-                        heating,
-                        "flat",
-                    )
+            rows.extend(
+                _trajectory_row(
+                    compiled.case,
+                    "control_heating",
+                    method,
+                    compiled.schedules[method],
+                    compiled.references[method],
+                    architecture,
+                    sim,
+                    sample,
+                    detuning,
+                    fixed_control,
+                    heating,
+                    "flat",
                 )
+                for method in ROUTING_METHODS
+            )
     profile = tuple(float(profile_architecture.field_at(site)) for site in range(architecture.num_sites))
     for detuning in routing_detunings:
         for heating in settings.profile_heating:
-            for profile_name, full_schedule in (("aware", aware_full), ("agnostic", schedules["FullSADD"])):
-                for method, schedule in (("NoDD", schedules["NoDD"]), ("FullSADD", full_schedule)):
-                    rows.extend(
-                        _trajectory_rows(
-                            case,
+            for profile_name, full_schedule, full_reference in (
+                ("aware", compiled.aware_full, compiled.references["ProfileAwareFullSADD"]),
+                ("agnostic", compiled.schedules["FullSADD"], compiled.references["FullSADD"]),
+            ):
+                for method, schedule, reference in (
+                    ("NoDD", compiled.schedules["NoDD"], compiled.references["NoDD"]),
+                    ("FullSADD", full_schedule, full_reference),
+                ):
+                    rows.append(
+                        _trajectory_row(
+                            compiled.case,
                             "profile_awareness",
                             method,
                             schedule,
+                            reference,
                             architecture,
                             sim,
-                            settings.samples,
+                            sample,
                             detuning,
                             fixed_control,
                             heating,
@@ -718,23 +1012,23 @@ def _simulate_case(
     return rows
 
 
-def _trajectory_rows(
+def _trajectory_row(
     case: Case,
     scenario: str,
     method: str,
     schedule_info: tuple[ActionSchedule, frozenset[int]],
+    reference: QuantumCircuit,
     architecture: Architecture,
     sim: Mapping[str, object],
-    samples: int,
+    sample: int,
     detuning: float,
     control: float,
     heating: float,
     profile: str,
     *,
     field_profile: tuple[float, ...] | None = None,
-) -> list[RawRow]:
+) -> RawRow:
     schedule, local_ids = schedule_info
-    reference = build_reference_circuit(schedule, architecture, local_action_ids=local_ids)
     base_seed = _seed(_integer(sim, "seed"), case.name, scenario, detuning, control, heating)
     noise = PaperNoise(
         dt_seconds=_number(sim, "dt_seconds"),
@@ -747,30 +1041,27 @@ def _trajectory_rows(
         heating_noise_scale=_number(sim, "heating_noise_scale"),
         field_profile=field_profile,
     )
-    output: list[RawRow] = []
-    for sample in range(samples):
-        seed = _seed(base_seed, sample)
-        circuit = build_noisy_circuit(schedule, architecture, noise, seed=seed, local_action_ids=local_ids)
-        infidelity = simulate_infidelity(
-            circuit,
-            reference,
-            max_bond_dimension=_integer(sim, "max_bond_dimension"),
-            svd_threshold=_number(sim, "svd_threshold"),
-            seed=seed,
-        )
-        output.append({
-            "scenario": scenario,
-            "case": case.name,
-            "method": method,
-            "sample": sample,
-            "seed": seed,
-            "detuning": detuning,
-            "control": control,
-            "heating": heating,
-            "profile": profile,
-            "state_infidelity": infidelity,
-        })
-    return output
+    seed = _seed(base_seed, sample)
+    circuit = build_noisy_circuit(schedule, architecture, noise, seed=seed, local_action_ids=local_ids)
+    infidelity = simulate_infidelity(
+        circuit,
+        reference,
+        max_bond_dimension=_integer(sim, "max_bond_dimension"),
+        svd_threshold=_number(sim, "svd_threshold"),
+        seed=seed,
+    )
+    return {
+        "scenario": scenario,
+        "case": case.name,
+        "method": method,
+        "sample": sample,
+        "seed": seed,
+        "detuning": detuning,
+        "control": control,
+        "heating": heating,
+        "profile": profile,
+        "state_infidelity": infidelity,
+    }
 
 
 def _panel_detunings(detunings: tuple[float, ...]) -> tuple[float, ...]:
