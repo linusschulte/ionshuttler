@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 _SCHEMA_VERSION = 1
 _SAMPLE_NAME = re.compile(r"sample_(\d{6})\.csv")
+_TABLE_NAME = re.compile(r"table_ii_(\d{6})\.csv")
 
 
 @dataclass(frozen=True)
@@ -62,9 +63,13 @@ class CheckpointStore:
         if not self.manifest_path.exists():
             return
         manifest = self._read_manifest()
-        if manifest.get("identity") != self.identity:
+        stored_identity = manifest.get("identity")
+        compatible_keys = ("mode", "python", "scientific_inputs_sha256")
+        if not isinstance(stored_identity, dict) or any(
+            stored_identity.get(key) != self.identity.get(key) for key in compatible_keys
+        ):
             msg = (
-                "checkpoint configuration or paper implementation does not match this run; "
+                "checkpoint scientific configuration or Python version does not match this run; "
                 "choose a new output directory"
             )
             raise RuntimeError(msg)
@@ -135,19 +140,24 @@ class CheckpointStore:
         Returns:
             All complete sample indices in the checkpoint directory.
 
-        Raises:
-            RuntimeError: If a shard has an invalid name, shape, or sample field.
         """
+        return self._completed_samples("sample_*.csv", _SAMPLE_NAME, self.expected_rows_per_sample)
+
+    def completed_table_samples(self, expected_rows: int) -> frozenset[int]:
+        """Return validated Table II supplement sample indices."""
+        return self._completed_samples("table_ii_*.csv", _TABLE_NAME, expected_rows)
+
+    def _completed_samples(self, glob: str, pattern: re.Pattern[str], expected_rows: int) -> frozenset[int]:
         completed: set[int] = set()
-        for path in sorted(self.checkpoint_dir.glob("sample_*.csv")):
-            match = _SAMPLE_NAME.fullmatch(path.name)
+        for path in sorted(self.checkpoint_dir.glob(glob)):
+            match = pattern.fullmatch(path.name)
             if match is None:
                 msg = f"invalid checkpoint shard name: {path.name}"
                 raise RuntimeError(msg)
             sample = int(match.group(1))
             rows = read_csv(path)
-            if len(rows) != self.expected_rows_per_sample:
-                msg = f"checkpoint shard {path.name} has {len(rows)} rows; expected {self.expected_rows_per_sample}"
+            if len(rows) != expected_rows:
+                msg = f"checkpoint shard {path.name} has {len(rows)} rows; expected {expected_rows}"
                 raise RuntimeError(msg)
             if any(row.get("sample") != str(sample) for row in rows):
                 msg = f"checkpoint shard {path.name} contains rows for another sample"
@@ -163,18 +173,34 @@ class CheckpointStore:
 
         Raises:
             ValueError: If the sample index or row shape is invalid.
-            FileExistsError: If the sample was already committed.
         """
-        if sample < 0:
-            msg = "sample index must be non-negative"
-            raise ValueError(msg)
         if len(rows) != self.expected_rows_per_sample:
             msg = f"sample {sample} produced {len(rows)} rows; expected {self.expected_rows_per_sample}"
+            raise ValueError(msg)
+        return self._commit(sample, rows, "sample")
+
+    def commit_table(self, sample: int, rows: Sequence[RawRow], expected_rows: int) -> Path:
+        """Atomically commit one Table II supplement shard.
+
+        Returns:
+            The committed shard path.
+
+        Raises:
+            ValueError: If the row shape is invalid.
+        """
+        if len(rows) != expected_rows:
+            msg = f"Table II sample {sample} produced {len(rows)} rows; expected {expected_rows}"
+            raise ValueError(msg)
+        return self._commit(sample, rows, "table_ii")
+
+    def _commit(self, sample: int, rows: Sequence[RawRow], prefix: str) -> Path:
+        if sample < 0:
+            msg = "sample index must be non-negative"
             raise ValueError(msg)
         if any(int(row["sample"]) != sample for row in rows):
             msg = f"sample {sample} contains rows for another sample"
             raise ValueError(msg)
-        path = self.checkpoint_dir / f"sample_{sample:06d}.csv"
+        path = self.checkpoint_dir / f"{prefix}_{sample:06d}.csv"
         if path.exists():
             msg = f"checkpoint already exists: {path}"
             raise FileExistsError(msg)
@@ -195,6 +221,24 @@ class CheckpointStore:
             path = self.checkpoint_dir / f"sample_{sample:06d}.csv"
             if not path.exists():
                 msg = f"missing checkpoint for sample {sample}"
+                raise RuntimeError(msg)
+            rows.extend(cast("list[RawRow]", read_csv(path)))
+        return rows
+
+    def load_table_prefix(self, samples: int) -> list[RawRow]:
+        """Load the requested contiguous Table II supplement prefix.
+
+        Returns:
+            Rows from the requested samples.
+
+        Raises:
+            RuntimeError: If a requested supplement is missing.
+        """
+        rows: list[RawRow] = []
+        for sample in range(samples):
+            path = self.checkpoint_dir / f"table_ii_{sample:06d}.csv"
+            if not path.exists():
+                msg = f"missing Table II checkpoint for sample {sample}"
                 raise RuntimeError(msg)
             rows.extend(cast("list[RawRow]", read_csv(path)))
         return rows

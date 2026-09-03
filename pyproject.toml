@@ -266,7 +266,6 @@ git-only = [
 
 [dependency-groups]
 paper = [
-    "mqt-bench==2.2.3",
     "mqt-yaqs==0.6.0",
     "mqt-ionshuttler[dd]",
 ]

@@ -31,6 +31,7 @@ METHOD_STYLES = {
     "PulseOnlySADD": ("#e08214", "D", "Pulse-only SADD"),
     "FullSADD": ("#2166ac", "o", "Full SADD"),
 }
+MANUSCRIPT_PANEL_DETUNINGS = (10.0, 1.0, 0.1)
 
 
 def render_all(
@@ -84,10 +85,12 @@ def _operating_regime(
         grid[controls.index(float(row["control"])), detunings.index(float(row["detuning"]))] = float(
             row["mean_log10_ratio"]
         )
-    magnitude = max(1.0, float(np.nanmax(np.abs(grid))))
+    magnitude = max(2.0, float(np.nanmax(np.abs(grid))))
     figure, axes = plt.subplots(1, 3, figsize=(12.0, 3.5))
     axis = axes[0]
-    image = axis.imshow(grid, origin="lower", aspect="auto", cmap="RdBu_r", norm=TwoSlopeNorm(0, -magnitude, magnitude))
+    image = axis.imshow(
+        grid, origin="lower", aspect="equal", cmap="RdBu_r", norm=TwoSlopeNorm(0, -magnitude, magnitude)
+    )
     axis.set_xticks(range(len(detunings)), [f"{value:g}" for value in detunings])
     axis.set_yticks(range(len(controls)), [f"{value:g}" for value in controls])
     axis.set_xlabel(r"Detuning $\delta\omega_0$")
@@ -149,7 +152,7 @@ def _absolute_cross_section(
 
 def _rerouting_benefit(rows: Sequence[RawRow], path: Path) -> None:
     selected = [row for row in rows if row["scenario"] == "control_heating"]
-    detunings = sorted({float(row["detuning"]) for row in selected})
+    detunings = _ordered_panel_detunings({float(row["detuning"]) for row in selected})
     figure, axes = plt.subplots(1, len(detunings), figsize=(4.1 * len(detunings), 3.4), squeeze=False, sharey=True)
     for axis, detuning in zip(axes[0], detunings, strict=True):
         for method in ("NearestHahn", "PulseOnlySADD", "FullSADD"):
@@ -168,7 +171,7 @@ def _rerouting_benefit(rows: Sequence[RawRow], path: Path) -> None:
                 label=label,
             )
         axis.axhline(0.0, color="black", linewidth=0.7)
-        axis.set_xscale("symlog", linthresh=1e-4)
+        _set_heating_axis(axis)
         axis.set_title(rf"$\delta\omega_0={detuning:g}$")
         axis.set_xlabel(r"Motional-error scale $s_{\rm heat}$")
     axes[0, 0].set_ylabel("Mean log-infidelity ratio")
@@ -178,7 +181,7 @@ def _rerouting_benefit(rows: Sequence[RawRow], path: Path) -> None:
 
 def _profile_awareness(rows: Sequence[RawRow], path: Path) -> None:
     selected = [row for row in rows if row["scenario"] == "profile_awareness" and row["method"] == "FullSADD"]
-    detunings = sorted({float(row["detuning"]) for row in selected})
+    detunings = _ordered_panel_detunings({float(row["detuning"]) for row in selected})
     figure, axes = plt.subplots(1, len(detunings), figsize=(4.1 * len(detunings), 3.4), squeeze=False, sharey=True)
     for axis, detuning in zip(axes[0], detunings, strict=True):
         for profile, label, style in (("aware", "Profile-aware", "-"), ("agnostic", "Profile-agnostic", "--")):
@@ -196,12 +199,24 @@ def _profile_awareness(rows: Sequence[RawRow], path: Path) -> None:
                 label=label,
             )
         axis.axhline(0.0, color="black", linewidth=0.7)
-        axis.set_xscale("symlog", linthresh=1e-4)
+        _set_heating_axis(axis)
         axis.set_title(rf"$\delta\omega_0={detuning:g}$")
         axis.set_xlabel(r"Motional-error scale $s_{\rm heat}$")
     axes[0, 0].set_ylabel("Mean log-infidelity ratio")
     axes[0, -1].legend(fontsize="small")
     _save(figure, path)
+
+
+def _ordered_panel_detunings(available: set[float]) -> tuple[float, ...]:
+    """Return manuscript detunings in their displayed panel order."""
+    selected = tuple(detuning for detuning in MANUSCRIPT_PANEL_DETUNINGS if detuning in available)
+    return selected or tuple(sorted(available, reverse=True))
+
+
+def _set_heating_axis(axis: plt.Axes) -> None:
+    """Use the manuscript heating scale without a negative plotting margin."""
+    axis.set_xscale("symlog", linthresh=1e-4)
+    axis.set_xlim(left=0.0)
 
 
 def _proxy_applicability(temporal: Sequence[RawRow], spatial: Sequence[RawRow], path: Path) -> None:
@@ -264,8 +279,18 @@ def _compilation_cost(
     axes[0].set_xlabel("Evaluated opportunities")
     axes[0].set_ylabel("Compilation time [s]")
     axes[0].legend(fontsize="small")
-    runtimes = [float(row["runtime_seconds"]) for row in opportunities]
-    axes[1].hist(runtimes, bins=min(20, max(3, len(runtimes))), color=METHOD_STYLES["FullSADD"][0])
+    runtimes = np.asarray([float(row["runtime_seconds"]) for row in opportunities])
+    positive_runtimes = runtimes[runtimes > 0]
+    bin_count = min(20, max(3, len(positive_runtimes)))
+    if len(positive_runtimes) and float(np.min(positive_runtimes)) < float(np.max(positive_runtimes)):
+        bins: int | np.ndarray = np.geomspace(
+            float(np.min(positive_runtimes)),
+            float(np.max(positive_runtimes)),
+            bin_count + 1,
+        )
+    else:
+        bins = bin_count
+    axes[1].hist(positive_runtimes, bins=bins, color=METHOD_STYLES["FullSADD"][0])
     axes[1].set_xscale("log")
     axes[1].set_xlabel("Runtime per control opportunity [s]")
     axes[1].set_ylabel("Count")

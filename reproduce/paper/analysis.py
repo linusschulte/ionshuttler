@@ -149,8 +149,8 @@ def covariance_proxy_rows(
         base_schedule,
         base_ids,
         architecture,
-        temporal_corr=1e12,
-        spatial_corr=1e12,
+        temporal_corr=float("inf"),
+        spatial_corr=float("inf"),
         dt_seconds=dt_seconds,
     )
     for tau in temporal_scales:
@@ -161,7 +161,7 @@ def covariance_proxy_rows(
             base_ids,
             architecture,
             temporal_corr=float(tau),
-            spatial_corr=2.0,
+            spatial_corr=float("inf"),
             dt_seconds=dt_seconds,
         )
         temporal.append({
@@ -183,7 +183,7 @@ def covariance_proxy_rows(
             base_schedule,
             base_ids,
             architecture,
-            temporal_corr=10000.0,
+            temporal_corr=float("inf"),
             spatial_corr=float(length),
             dt_seconds=dt_seconds,
         )

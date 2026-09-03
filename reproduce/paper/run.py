@@ -16,7 +16,9 @@ import math
 import sys
 import time
 import tomllib
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, replace
+from multiprocessing import get_context
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -47,6 +49,7 @@ from mqt.ionshuttler.linear.field_profile import FieldProfile
 from reproduce.paper.analysis import (
     RawRow,
     covariance_proxy_rows,
+    read_csv,
     schedule_chi,
     summarize_across_cases,
     summarize_infidelities,
@@ -59,16 +62,22 @@ from reproduce.paper.simulation import (
     build_noisy_circuit,
     build_reference_circuit,
     local_pulse_action_ids,
-    simulate_infidelity,
+    simulate_state,
+    state_infidelity,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    from mqt.yaqs import State as YaqsState  # ty: ignore[unresolved-import]
+
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = Path(__file__).with_name("paper.toml")
+INPUT_DIR = Path(__file__).with_name("circuits")
+FROZEN_SCHEDULES = INPUT_DIR / "compiled_schedules.json"
 METHODS = ("NoDD", "IdealizedHahn", "NearestHahn", "PulseOnlySADD", "FullSADD")
 ROUTING_METHODS = ("NoDD", "NearestHahn", "PulseOnlySADD", "FullSADD")
+TABLE_METHODS = ("NoDD", "PulseOnlySADD", "FullSADD")
 
 
 @dataclass(frozen=True)
@@ -116,7 +125,22 @@ class CompiledCase:
     case: Case
     schedules: Mapping[str, tuple[ActionSchedule, frozenset[int]]]
     aware_full: tuple[ActionSchedule, frozenset[int]]
-    references: Mapping[str, QuantumCircuit]
+    reference: QuantumCircuit
+
+
+@dataclass(frozen=True)
+class _WorkerContext:
+    """Read-only state inherited by paper simulation worker processes."""
+
+    compiled_cases: Sequence[CompiledCase]
+    architecture: Architecture
+    profile_architecture: Architecture
+    simulation: Mapping[str, object]
+    sweeps: Mapping[str, object]
+    settings: RunSettings
+
+
+_WORKER_CONTEXT: _WorkerContext | None = None
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -131,6 +155,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True, help="fresh or replaceable output directory")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--samples", type=int, help="target deterministic sample prefix (may extend a checkpoint)")
+    parser.add_argument("--workers", type=int, help="circuit simulation worker processes")
+    parser.add_argument("--plots-only", action="store_true", help="redraw PDFs from existing output CSV files")
+    parser.add_argument(
+        "--regenerate-schedules",
+        action="store_true",
+        help="manually recompile and overwrite the frozen paper schedule bundle",
+    )
     args = parser.parse_args(argv)
     config = _load_config(args.config)
     settings = _settings(config, args.mode)
@@ -140,10 +171,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings = replace(settings, samples=args.samples)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
+    if args.plots_only and args.regenerate_schedules:
+        parser.error("--plots-only and --regenerate-schedules are mutually exclusive")
+    if args.plots_only:
+        _rerender_existing(output)
+        return 0
 
     architecture, profile_architecture = _architectures(_table(config, "architecture"))
     simulation_config = _table(config, "simulation")
     sweep_config = _table(config, "sweeps")
+    workers = _integer(simulation_config, "workers") if args.workers is None else args.workers
+    if workers <= 0:
+        parser.error("--workers must be positive")
+    if args.regenerate_schedules and args.mode != "paper":
+        parser.error("--regenerate-schedules requires paper mode")
 
     checkpoint = CheckpointStore(
         output,
@@ -151,20 +192,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         _expected_rows_per_sample(settings),
     )
     checkpoint.validate_identity()
+    if args.regenerate_schedules and checkpoint.exists:
+        parser.error("--regenerate-schedules requires an output directory without checkpoints")
     if checkpoint.exists:
         print("restoring exact compiled schedules from checkpoint", flush=True)
         compiled_cases, schedule_rows, opportunity_rows, proxy_temporal, proxy_spatial = _restore_compiled_cases(
             checkpoint.load_compiled(), architecture
         )
     else:
-        compiled_cases, schedule_rows, opportunity_rows, proxy_temporal, proxy_spatial, fingerprints = _compile_cases(
-            settings,
-            architecture,
-            profile_architecture,
-            _compiler(architecture, _table(config, "compiler")),
-            _dd_config(_table(config, "dd")),
-            simulation_config,
-        )
+        if args.regenerate_schedules:
+            compiled = _compile_cases(
+                settings,
+                architecture,
+                profile_architecture,
+                _compiler(architecture, _table(config, "compiler")),
+                _dd_config(_table(config, "dd")),
+                simulation_config,
+            )
+            compiled_cases, schedule_rows, opportunity_rows, proxy_temporal, proxy_spatial, fingerprints = compiled
+            _write_frozen_schedules(
+                _compiled_payload(compiled_cases, schedule_rows, opportunity_rows, proxy_temporal, proxy_spatial),
+                config,
+            )
+            print(f"overwrote frozen schedules at {FROZEN_SCHEDULES}", flush=True)
+        else:
+            compiled_cases, schedule_rows, opportunity_rows, proxy_temporal, proxy_spatial = _load_frozen_schedules(
+                config, settings, architecture
+            )
+            fingerprints = {
+                compiled.case.name: _schedule_fingerprint(compiled.schedules, compiled.aware_full)
+                for compiled in compiled_cases
+            }
+            print(f"loaded frozen schedules from {FROZEN_SCHEDULES}", flush=True)
         checkpoint.prepare(
             fingerprints,
             _compiled_payload(compiled_cases, schedule_rows, opportunity_rows, proxy_temporal, proxy_spatial),
@@ -172,57 +231,180 @@ def main(argv: Sequence[str] | None = None) -> int:
     temporal = _average_proxy(proxy_temporal, "tau_steps")
     spatial = _average_proxy(proxy_spatial, "ell_sites")
     completed = checkpoint.completed_samples()
+    table_rows_per_sample = len(settings.cases) * len(TABLE_METHODS)
+    table_completed = checkpoint.completed_table_samples(table_rows_per_sample)
+    global _WORKER_CONTEXT  # ruff: ignore[global-statement] - Forked one-off research workers inherit immutable run state.
+    _WORKER_CONTEXT = _WorkerContext(
+        compiled_cases,
+        architecture,
+        profile_architecture,
+        simulation_config,
+        sweep_config,
+        settings,
+    )
+    executor = (
+        None
+        if workers == 1
+        else ProcessPoolExecutor(max_workers=min(workers, len(compiled_cases)), mp_context=get_context("fork"))
+    )
     preview_samples = 0
-    for sample in range(settings.samples):
-        if sample in completed:
-            print(f"[sample {sample + 1}/{settings.samples}] checkpoint complete; skipping", flush=True)
-            continue
-        sample_rows: list[RawRow] = []
-        for case_index, compiled in enumerate(compiled_cases, start=1):
-            print(
-                f"[sample {sample + 1}/{settings.samples}][{case_index}/{len(compiled_cases)}] "
-                f"simulating {compiled.case.name}",
-                flush=True,
+    try:
+        for sample in range(settings.samples):
+            run_main = sample not in completed
+            run_table = sample not in table_completed
+            if not run_main and not run_table:
+                print(f"[sample {sample + 1}/{settings.samples}] checkpoint complete; skipping", flush=True)
+                continue
+            sample_rows, table_rows = _run_case_tasks(executor, sample, run_main=run_main, run_table=run_table)
+            if run_main:
+                shard = checkpoint.commit(sample, sample_rows)
+                completed = completed.union((sample,))
+                print(f"committed {shard}", flush=True)
+            if run_table:
+                table_shard = checkpoint.commit_table(sample, table_rows, table_rows_per_sample)
+                table_completed = table_completed.union((sample,))
+                print(f"committed {table_shard}", flush=True)
+            _write_outputs(
+                [*checkpoint.load_prefix(sample + 1), *checkpoint.load_table_prefix(sample + 1)],
+                schedule_rows,
+                opportunity_rows,
+                temporal,
+                spatial,
+                sweep_config,
+                simulation_config,
+                replace(settings, samples=sample + 1),
+                output,
             )
-            sample_rows.extend(
-                _simulate_case_sample(
-                    compiled,
-                    sample,
-                    architecture,
-                    profile_architecture,
-                    simulation_config,
-                    sweep_config,
-                    settings,
-                )
+            preview_samples = sample + 1
+        if preview_samples != settings.samples:
+            _write_outputs(
+                [
+                    *checkpoint.load_prefix(settings.samples),
+                    *checkpoint.load_table_prefix(settings.samples),
+                ],
+                schedule_rows,
+                opportunity_rows,
+                temporal,
+                spatial,
+                sweep_config,
+                simulation_config,
+                settings,
+                output,
             )
-        shard = checkpoint.commit(sample, sample_rows)
-        completed = completed.union((sample,))
-        print(f"committed {shard}", flush=True)
-        _write_outputs(
-            checkpoint.load_prefix(sample + 1),
-            schedule_rows,
-            opportunity_rows,
-            temporal,
-            spatial,
-            sweep_config,
-            simulation_config,
-            replace(settings, samples=sample + 1),
-            output,
-        )
-        preview_samples = sample + 1
-    if preview_samples != settings.samples:
-        _write_outputs(
-            checkpoint.load_prefix(settings.samples),
-            schedule_rows,
-            opportunity_rows,
-            temporal,
-            spatial,
-            sweep_config,
-            simulation_config,
-            settings,
-            output,
-        )
+    finally:
+        if executor is not None:
+            executor.shutdown(cancel_futures=True)
+        _WORKER_CONTEXT = None
     return 0
+
+
+def _rerender_existing(output: Path) -> None:
+    csv_dir = output / "csv"
+
+    def rows(name: str) -> list[RawRow]:
+        return cast("list[RawRow]", read_csv(csv_dir / name))
+
+    figures = render_all(
+        rows("aggregate_metrics.csv"),
+        rows("per_case_metrics.csv"),
+        rows("temporal_applicability.csv"),
+        rows("spatial_applicability.csv"),
+        rows("schedule_summary.csv"),
+        rows("runtime_opportunities.csv"),
+        rows("objective_fidelity.csv"),
+        output / "figures",
+    )
+    print("regenerated figures:", flush=True)
+    for path in figures:
+        print(f"  {path}", flush=True)
+
+
+def _run_case_tasks(
+    executor: ProcessPoolExecutor | None,
+    sample: int,
+    *,
+    run_main: bool,
+    run_table: bool,
+) -> tuple[list[RawRow], list[RawRow]]:
+    context = _require_worker_context()
+    results: dict[int, tuple[list[RawRow], list[RawRow]]] = {}
+    if executor is None:
+        completed = (
+            _simulate_case_worker(index, sample, run_main=run_main, run_table=run_table)
+            for index in range(len(context.compiled_cases))
+        )
+    else:
+        futures = {
+            executor.submit(_simulate_case_worker, index, sample, run_main=run_main, run_table=run_table): index
+            for index in range(len(context.compiled_cases))
+        }
+        completed = (future.result() for future in as_completed(futures))
+    for completed_count, (case_index, main_rows, table_rows) in enumerate(completed, start=1):
+        results[case_index] = (main_rows, table_rows)
+        case = context.compiled_cases[case_index].case
+        print(
+            f"[sample {sample + 1}/{context.settings.samples}]"
+            f"[{completed_count}/{len(context.compiled_cases)}] completed {case.name}",
+            flush=True,
+        )
+    ordered_main: list[RawRow] = []
+    ordered_table: list[RawRow] = []
+    for case_index in range(len(context.compiled_cases)):
+        main_rows, table_rows = results[case_index]
+        ordered_main.extend(main_rows)
+        ordered_table.extend(table_rows)
+    return ordered_main, ordered_table
+
+
+def _simulate_case_worker(
+    case_index: int,
+    sample: int,
+    *,
+    run_main: bool,
+    run_table: bool,
+) -> tuple[int, list[RawRow], list[RawRow]]:
+    context = _require_worker_context()
+    compiled = context.compiled_cases[case_index]
+    ideal = simulate_state(
+        compiled.reference,
+        max_bond_dimension=_integer(context.simulation, "max_bond_dimension"),
+        svd_threshold=_number(context.simulation, "svd_threshold"),
+        seed=_seed(_integer(context.simulation, "seed"), compiled.case.name, "ideal"),
+    )
+    main_rows = (
+        _simulate_case_sample(
+            compiled,
+            sample,
+            ideal,
+            context.architecture,
+            context.profile_architecture,
+            context.simulation,
+            context.sweeps,
+            context.settings,
+        )
+        if run_main
+        else []
+    )
+    table_rows = (
+        _simulate_table_ii_case_sample(
+            compiled,
+            sample,
+            ideal,
+            context.architecture,
+            context.simulation,
+            context.sweeps,
+        )
+        if run_table
+        else []
+    )
+    return case_index, main_rows, table_rows
+
+
+def _require_worker_context() -> _WorkerContext:
+    if _WORKER_CONTEXT is None:
+        msg = "paper simulation worker context is not initialized"
+        raise RuntimeError(msg)
+    return _WORKER_CONTEXT
 
 
 def _compile_cases(
@@ -278,16 +460,12 @@ def _compiled_case(
     aware_full: tuple[ActionSchedule, frozenset[int]],
     architecture: Architecture,
 ) -> CompiledCase:
-    references = {
-        method: build_reference_circuit(schedule, architecture, local_action_ids=local_ids)
-        for method, (schedule, local_ids) in schedules.items()
-    }
-    references["ProfileAwareFullSADD"] = build_reference_circuit(
-        aware_full[0],
+    reference = build_reference_circuit(
+        schedules["NoDD"][0],
         architecture,
-        local_action_ids=aware_full[1],
+        local_action_ids=schedules["NoDD"][1],
     )
-    return CompiledCase(case, schedules, aware_full, references)
+    return CompiledCase(case, schedules, aware_full, reference)
 
 
 def _compiled_payload(
@@ -322,6 +500,78 @@ def _compiled_payload(
         "proxy_temporal": list(proxy_temporal),
         "proxy_spatial": list(proxy_spatial),
     }
+
+
+def _write_frozen_schedules(payload: Mapping[str, object], config: Mapping[str, object]) -> None:
+    envelope = {
+        "schema_version": 1,
+        "schedule_inputs_sha256": _schedule_inputs_sha256(config),
+        "payload": payload,
+    }
+    temporary = FROZEN_SCHEDULES.with_name(f".{FROZEN_SCHEDULES.name}.tmp")
+    temporary.write_text(json.dumps(envelope, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(FROZEN_SCHEDULES)
+
+
+def _load_frozen_schedules(
+    config: Mapping[str, object], settings: RunSettings, architecture: Architecture
+) -> tuple[list[CompiledCase], list[RawRow], list[RawRow], list[RawRow], list[RawRow]]:
+    if not FROZEN_SCHEDULES.is_file():
+        msg = f"missing frozen schedules: {FROZEN_SCHEDULES}; run paper mode with --regenerate-schedules"
+        raise FileNotFoundError(msg)
+    value = json.loads(FROZEN_SCHEDULES.read_text(encoding="utf-8"))
+    envelope = _checkpoint_mapping(value, "frozen schedule bundle")
+    if envelope.get("schema_version") != 1 or envelope.get("schedule_inputs_sha256") != _schedule_inputs_sha256(config):
+        msg = "frozen schedules do not match the configured compiler/DD/circuit inputs; regenerate them explicitly"
+        raise RuntimeError(msg)
+    payload = _checkpoint_mapping(envelope.get("payload"), "frozen schedule payload")
+    compiled, schedules, opportunities, _temporal, _spatial = _restore_compiled_cases(payload, architecture)
+    selected = {case.name for case in settings.cases}
+    selected_compiled = [case for case in compiled if case.case.name in selected]
+    simulation = _table(config, "simulation")
+    temporal: list[RawRow] = []
+    spatial: list[RawRow] = []
+    for case in selected_compiled:
+        case_temporal, case_spatial = covariance_proxy_rows(
+            case.schedules,
+            architecture,
+            temporal_scales=settings.temporal_scales,
+            spatial_scales=settings.spatial_scales,
+            dt_seconds=_number(simulation, "dt_seconds"),
+        )
+        temporal.extend({"case": case.case.name, **row} for row in case_temporal)
+        spatial.extend({"case": case.case.name, **row} for row in case_spatial)
+    return (
+        selected_compiled,
+        [row for row in schedules if str(row["case"]) in selected],
+        [row for row in opportunities if str(row["case"]) in selected],
+        temporal,
+        spatial,
+    )
+
+
+def _schedule_inputs_sha256(config: Mapping[str, object]) -> str:
+    simulation = _table(config, "simulation")
+    payload = {
+        "schema_version": 1,
+        "cases": _case_tables(config),
+        "architecture": _table(config, "architecture"),
+        "compiler": _table(config, "compiler"),
+        "dd": _table(config, "dd"),
+        "proxy_settings": {
+            "dt_seconds": simulation["dt_seconds"],
+            "dephasing_correlation_time_steps": simulation["dephasing_correlation_time_steps"],
+        },
+        "circuit_inputs_sha256": {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(INPUT_DIR.glob("*.qasm"))
+        },
+    }
+    linear = hashlib.sha256()
+    for path in sorted((ROOT / "src" / "mqt" / "ionshuttler" / "linear").rglob("*.py")):
+        linear.update(str(path.relative_to(ROOT)).encode())
+        linear.update(path.read_bytes())
+    payload["linear_implementation_sha256"] = linear.hexdigest()
+    return _json_sha256(payload)
 
 
 def _restore_compiled_cases(
@@ -395,6 +645,7 @@ def _run_identity(config: Mapping[str, object], settings: RunSettings) -> dict[s
     simulation = dict(_table(config, "simulation"))
     simulation.pop("samples", None)
     simulation.pop("bootstrap_samples", None)
+    simulation.pop("workers", None)
     scientific_inputs = {
         "mode": settings.mode,
         "cases": [{"family": case.family, "qubits": case.qubits, "seed": case.seed} for case in settings.cases],
@@ -409,6 +660,9 @@ def _run_identity(config: Mapping[str, object], settings: RunSettings) -> dict[s
         "dd": _table(config, "dd"),
         "simulation": simulation,
         "sweeps": _table(config, "sweeps"),
+        "circuit_inputs_sha256": {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(INPUT_DIR.glob("*.qasm"))
+        },
     }
     implementation = hashlib.sha256()
     paper_paths = [
@@ -474,7 +728,7 @@ def _write_outputs(
         bootstrap_samples=settings.bootstrap_samples,
         seed=_integer(simulation, "seed"),
     )
-    table_ii = _table_ii_rows(per_case, schedule_rows, sweeps, settings)
+    table_ii = _table_ii_rows(per_case, schedule_rows, sweeps)
     objective = _objective_fidelity_rows(
         per_case,
         schedule_rows,
@@ -519,6 +773,14 @@ def _table(config: Mapping[str, object], name: str) -> dict[str, object]:
         msg = f"configuration requires a [{name}] table"
         raise TypeError(msg)
     return cast("dict[str, object]", value)
+
+
+def _case_tables(config: Mapping[str, object]) -> list[dict[str, object]]:
+    value = config.get("cases")
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        msg = "configuration requires [[cases]] tables"
+        raise TypeError(msg)
+    return cast("list[dict[str, object]]", value)
 
 
 def _number(config: Mapping[str, object], name: str) -> float:
@@ -644,41 +906,23 @@ def _dd_config(config: Mapping[str, object]) -> SADDConfig:
 
 
 def _make_circuit(case: Case) -> QuantumCircuit:
-    if case.family == "ising":
-        circuit = QuantumCircuit(case.qubits, name=case.name)
-        for _round in range(6):
-            for qubit in range(case.qubits - 1):
-                circuit.rz(0.2, qubit)
-            circuit.rz(0.2, case.qubits - 1)
-            for qubit in range(case.qubits):
-                circuit.ry(math.pi / 2, qubit)
-            for qubit in range(case.qubits - 1):
-                circuit.rzz(0.1, qubit, qubit + 1)
-            circuit.rzz(0.1, 0, case.qubits - 1)
-            for qubit in range(case.qubits):
-                circuit.ry(-math.pi / 2, qubit)
-        return circuit
-
-    benchmark = {"qft": "qft", "random": "randomcircuit", "qpe": "qpeexact", "ghz": "ghz"}.get(case.family)
-    if benchmark is None:
+    stem = {
+        "ising": "ising",
+        "qft": "qft_nativegates_quantinuum_qiskit_opt2",
+        "random": "randomcircuit_nativegates_quantinuum_qiskit_opt2_seed0",
+        "qpe": "qpeexact_nativegates_quantinuum_qiskit_opt2",
+        "ghz": "ghz_nativegates_quantinuum_qiskit_opt2",
+    }.get(case.family)
+    if stem is None:
         msg = f"unsupported paper circuit family: {case.family!r}"
         raise ValueError(msg)
-    try:
-        # The repository lint environment intentionally excludes the paper-only group.
-        from mqt.bench.targets import get_target_for_gateset  # ty: ignore[unresolved-import]
-
-        from mqt import bench  # ty: ignore[unresolved-import]
-    except ImportError as error:
-        msg = "paper circuit generation requires the `paper` dependency group (run `uv sync --group paper`)"
-        raise RuntimeError(msg) from error
-    return bench.get_benchmark(
-        benchmark=benchmark,
-        level=bench.BenchmarkLevel.NATIVEGATES,
-        circuit_size=case.qubits,
-        target=get_target_for_gateset("quantinuum", case.qubits),
-        opt_level=2,
-        random_parameters=True,
-    )
+    path = INPUT_DIR / f"{stem}_{case.qubits}.qasm"
+    if not path.is_file():
+        msg = f"missing frozen paper circuit: {path}"
+        raise FileNotFoundError(msg)
+    circuit = QuantumCircuit.from_qasm_file(path)
+    circuit.name = case.name
+    return circuit
 
 
 def _schedule_variants(
@@ -807,14 +1051,9 @@ def _table_ii_rows(
     metrics: Sequence[RawRow],
     schedules: Sequence[RawRow],
     sweeps: Mapping[str, object],
-    settings: RunSettings,
 ) -> list[RawRow]:
     detuning = _number(sweeps, "profile_detuning")
-    if detuning not in settings.detunings:
-        detuning = max(settings.detunings)
     heating = _number(sweeps, "selected_heating")
-    if heating not in settings.heating:
-        heating = settings.heating[0]
     control = _number(sweeps, "fixed_control")
     metric_index = {
         (
@@ -825,7 +1064,7 @@ def _table_ii_rows(
             float(row["heating"]),
         ): row
         for row in metrics
-        if row["scenario"] == "control_heating" and row["profile"] == "flat"
+        if row["scenario"] == "table_ii" and row["profile"] == "flat"
     }
     schedule_index = {(str(row["case"]), str(row["method"])): row for row in schedules}
     output: list[RawRow] = []
@@ -934,6 +1173,7 @@ def _objective_fidelity_rows(
 def _simulate_case_sample(
     compiled: CompiledCase,
     sample: int,
+    ideal_state: YaqsState,
     architecture: Architecture,
     profile_architecture: Architecture,
     sim: Mapping[str, object],
@@ -949,7 +1189,7 @@ def _simulate_case_sample(
                     "operating_envelope",
                     method,
                     compiled.schedules[method],
-                    compiled.references[method],
+                    ideal_state,
                     architecture,
                     sim,
                     sample,
@@ -970,7 +1210,7 @@ def _simulate_case_sample(
                     "control_heating",
                     method,
                     compiled.schedules[method],
-                    compiled.references[method],
+                    ideal_state,
                     architecture,
                     sim,
                     sample,
@@ -984,13 +1224,13 @@ def _simulate_case_sample(
     profile = tuple(float(profile_architecture.field_at(site)) for site in range(architecture.num_sites))
     for detuning in routing_detunings:
         for heating in settings.profile_heating:
-            for profile_name, full_schedule, full_reference in (
-                ("aware", compiled.aware_full, compiled.references["ProfileAwareFullSADD"]),
-                ("agnostic", compiled.schedules["FullSADD"], compiled.references["FullSADD"]),
+            for profile_name, full_schedule in (
+                ("aware", compiled.aware_full),
+                ("agnostic", compiled.schedules["FullSADD"]),
             ):
-                for method, schedule, reference in (
-                    ("NoDD", compiled.schedules["NoDD"], compiled.references["NoDD"]),
-                    ("FullSADD", full_schedule, full_reference),
+                for method, schedule in (
+                    ("NoDD", compiled.schedules["NoDD"]),
+                    ("FullSADD", full_schedule),
                 ):
                     rows.append(
                         _trajectory_row(
@@ -998,7 +1238,7 @@ def _simulate_case_sample(
                             "profile_awareness",
                             method,
                             schedule,
-                            reference,
+                            ideal_state,
                             architecture,
                             sim,
                             sample,
@@ -1012,12 +1252,42 @@ def _simulate_case_sample(
     return rows
 
 
+def _simulate_table_ii_case_sample(
+    compiled: CompiledCase,
+    sample: int,
+    ideal_state: YaqsState,
+    architecture: Architecture,
+    sim: Mapping[str, object],
+    sweeps: Mapping[str, object],
+) -> list[RawRow]:
+    detuning = _number(sweeps, "profile_detuning")
+    control = _number(sweeps, "fixed_control")
+    heating = _number(sweeps, "selected_heating")
+    return [
+        _trajectory_row(
+            compiled.case,
+            "table_ii",
+            method,
+            compiled.schedules[method],
+            ideal_state,
+            architecture,
+            sim,
+            sample,
+            detuning,
+            control,
+            heating,
+            "flat",
+        )
+        for method in TABLE_METHODS
+    ]
+
+
 def _trajectory_row(
     case: Case,
     scenario: str,
     method: str,
     schedule_info: tuple[ActionSchedule, frozenset[int]],
-    reference: QuantumCircuit,
+    ideal_state: YaqsState,
     architecture: Architecture,
     sim: Mapping[str, object],
     sample: int,
@@ -1038,18 +1308,17 @@ def _trajectory_row(
         pulse_area_std=control * _number(sim, "pulse_area_std"),
         axis_tilt_std=control * math.radians(_number(sim, "axis_tilt_std_degrees")),
         heating_scale=heating,
-        heating_noise_scale=_number(sim, "heating_noise_scale"),
         field_profile=field_profile,
     )
     seed = _seed(base_seed, sample)
     circuit = build_noisy_circuit(schedule, architecture, noise, seed=seed, local_action_ids=local_ids)
-    infidelity = simulate_infidelity(
+    actual_state = simulate_state(
         circuit,
-        reference,
         max_bond_dimension=_integer(sim, "max_bond_dimension"),
         svd_threshold=_number(sim, "svd_threshold"),
         seed=seed,
     )
+    infidelity = state_infidelity(actual_state, ideal_state)
     return {
         "scenario": scenario,
         "case": case.name,

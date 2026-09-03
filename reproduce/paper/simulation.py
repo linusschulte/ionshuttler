@@ -56,8 +56,34 @@ class PaperNoise:
     pulse_area_std: float = 0.0
     axis_tilt_std: float = 0.0
     heating_scale: float = 0.0
-    heating_noise_scale: float = 0.0
     field_profile: tuple[float, ...] | None = None
+
+    def normalized_profile(self, num_sites: int) -> tuple[float, ...]:
+        """Return the nonnegative site-sensitivity profile with unit RMS.
+
+        Args:
+            num_sites: Number of sites in the simulated architecture.
+
+        Returns:
+            One normalized sensitivity per site.
+
+        Raises:
+            ValueError: If the configured profile has the wrong size or cannot be normalized.
+        """
+        if self.field_profile is None:
+            return (1.0,) * num_sites
+        if len(self.field_profile) != num_sites:
+            msg = "field_profile must contain one value per site"
+            raise ValueError(msg)
+        values = np.asarray(self.field_profile, dtype=float)
+        if not np.all(np.isfinite(values)) or np.any(values < 0.0):
+            msg = "field_profile values must be finite and nonnegative"
+            raise ValueError(msg)
+        rms = float(np.sqrt(np.mean(values**2)))
+        if rms <= 0.0:
+            msg = "field_profile must have positive RMS"
+            raise ValueError(msg)
+        return tuple(float(value / rms) for value in values)
 
 
 @dataclass
@@ -91,10 +117,15 @@ class _DephasingState:
     field: np.ndarray | None = None
 
     def __post_init__(self) -> None:
-        sites = np.arange(self.num_sites, dtype=float)
-        distances = np.abs(sites[:, None] - sites[None, :])
-        covariance = np.exp(-distances / self.noise.correlation_length_sites)
-        self.cholesky = np.linalg.cholesky(covariance + 1e-12 * np.eye(self.num_sites))
+        if math.isinf(self.noise.correlation_length_sites):
+            self.cholesky = np.zeros((self.num_sites, self.num_sites), dtype=float)
+            self.cholesky[:, 0] = 1.0
+        else:
+            sites = np.arange(self.num_sites, dtype=float)
+            distances = np.abs(sites[:, None] - sites[None, :])
+            covariance = np.exp(-distances / self.noise.correlation_length_sites)
+            self.cholesky = np.linalg.cholesky(covariance + 1e-12 * np.eye(self.num_sites))
+        self.profile = self.noise.normalized_profile(self.num_sites)
 
     def angles(self, positions: tuple[int, ...]) -> tuple[float, ...]:
         innovation = self.noise.dephasing_strength * (self.cholesky @ self.rng.normal(size=self.num_sites))
@@ -103,8 +134,7 @@ class _DephasingState:
         else:
             alpha = math.exp(-1.0 / self.noise.correlation_time_steps)
             self.field = alpha * self.field + math.sqrt(max(0.0, 1.0 - alpha**2)) * innovation
-        profile = self.noise.field_profile or (1.0,) * self.num_sites
-        return tuple(float(self.field[site] * profile[site] * self.noise.dt_seconds) for site in positions)
+        return tuple(float(self.field[site] * self.profile[site] * self.noise.dt_seconds) for site in positions)
 
 
 def local_pulse_action_ids(report: object) -> frozenset[int]:
@@ -215,6 +245,34 @@ def simulate_infidelity(
     Returns:
         State infidelity in ``[0, 1]``.
 
+    """
+    ideal = simulate_state(
+        ideal_circuit,
+        max_bond_dimension=max_bond_dimension,
+        svd_threshold=svd_threshold,
+        seed=seed,
+    )
+    actual = simulate_state(
+        circuit,
+        max_bond_dimension=max_bond_dimension,
+        svd_threshold=svd_threshold,
+        seed=seed,
+    )
+    return state_infidelity(actual, ideal)
+
+
+def simulate_state(
+    circuit: QuantumCircuit,
+    *,
+    max_bond_dimension: int,
+    svd_threshold: float,
+    seed: int,
+) -> YaqsState:
+    """Run one pure-state YAQS circuit for the paper harness.
+
+    Returns:
+        The final matrix-product state.
+
     Raises:
         RuntimeError: If YAQS is missing or does not return a final state.
     """
@@ -224,26 +282,29 @@ def simulate_infidelity(
     except ImportError as error:
         msg = "paper reproduction requires the `paper` dependency group (run `uv sync --group paper`)"
         raise RuntimeError(msg) from error
+    params = StrongSimParams(
+        get_state=True,
+        num_traj=1,
+        max_bond_dim=max_bond_dimension,
+        svd_threshold=svd_threshold,
+        random_seed=seed,
+        gate_mode="mpo",
+    )
+    result = Simulator(parallel=False, show_progress=False).run(
+        State(length=circuit.num_qubits, initial="zeros"), circuit, params
+    )
+    if result.output_state is None:
+        msg = "YAQS did not return the requested final state"
+        raise RuntimeError(msg)
+    return result.output_state
 
-    def run(candidate: QuantumCircuit) -> YaqsState:
-        params = StrongSimParams(
-            get_state=True,
-            num_traj=1,
-            max_bond_dim=max_bond_dimension,
-            svd_threshold=svd_threshold,
-            random_seed=seed,
-            gate_mode="mpo",
-        )
-        result = Simulator(parallel=False, show_progress=False).run(
-            State(length=candidate.num_qubits, initial="zeros"), candidate, params
-        )
-        if result.output_state is None:
-            msg = "YAQS did not return the requested final state"
-            raise RuntimeError(msg)
-        return result.output_state
 
-    ideal = run(ideal_circuit)
-    actual = run(circuit)
+def state_infidelity(actual: YaqsState, ideal: YaqsState) -> float:
+    """Return normalized pure-state infidelity between two YAQS states.
+
+    Returns:
+        State infidelity in ``[0, 1]``.
+    """
     overlap = ideal.mps.scalar_product(actual.mps)
     ideal_norm = float(np.real(ideal.mps.scalar_product(ideal.mps)))
     actual_norm = float(np.real(actual.mps.scalar_product(actual.mps)))
@@ -336,16 +397,41 @@ def _append_noisy_2q(
     rng: np.random.Generator,
     state: _ControlState,
 ) -> None:
-    heating_sigma = noise.heating_scale * noise.heating_noise_scale * state.pair_motion(q0, q1)
+    heating_sigma = noise.heating_scale * state.pair_motion(q0, q1)
     theta = angle * (1.0 + float(rng.normal(0.0, noise.pulse_area_std)))
     theta += float(rng.normal(0.0, heating_sigma))
+    coefficients = _sample_tilted_2q_generator(gate, noise.axis_tilt_std, rng)
+    for supported_gate, coefficient in zip(("rxx", "ryy", "rzz"), coefficients, strict=True):
+        _append_2q_rotation(circuit, supported_gate, theta * float(coefficient), q0, q1)
+    state.consume_pair_motion(q0, q1)
+
+
+def _sample_tilted_2q_generator(gate: str, sigma: float, rng: np.random.Generator) -> np.ndarray:
+    names = ("rxx", "ryy", "rzz")
+    if gate not in names:
+        msg = f"unsupported two-qubit rotation: {gate!r}"
+        raise ValueError(msg)
+    vector = np.zeros(3, dtype=float)
+    principal = names.index(gate)
+    vector[principal] = 1.0
+    for index in range(3):
+        if index != principal:
+            vector[index] += float(rng.normal(0.0, sigma))
+    return vector / np.linalg.norm(vector)
+
+
+def _append_2q_rotation(circuit: QuantumCircuit, gate: str, theta: float, q0: int, q1: int) -> None:
+    if not theta:
+        return
     if gate == "rxx":
         circuit.rxx(theta, q0, q1)
     elif gate == "ryy":
         circuit.ryy(theta, q0, q1)
-    else:
+    elif gate == "rzz":
         circuit.rzz(theta, q0, q1)
-    state.consume_pair_motion(q0, q1)
+    else:
+        msg = f"unsupported two-qubit rotation: {gate!r}"
+        raise ValueError(msg)
 
 
 def _append_global_pulse(
