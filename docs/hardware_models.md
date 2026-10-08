@@ -28,17 +28,35 @@ operations, and timing values for the chosen model.
 </figure>
 
 The Grid model treats connected trap segments as the main storage and transport
-locations. Junctions define which segments ions can move between, and processing
-zones attach gate resources to this network. The model tracks motion through the
-network without resolving an ion's relative position within a segment.
-Performing gates requires the participating ion(s) to be (co-)located on a
-segment carrying a processing zone.
+locations. Each junction owns the segment endpoints that meet there. An ion can
+move between any two distinct endpoints of one junction. Each segment contains
+an ordered tuple of processing zones, which records their relative position from
+the segment's canonical start to its end. The model tracks an ordered ion chain
+in each segment without resolving the chain or processing zones into individual
+sites. Performing gates requires the participating ion(s) to be (co-)located on
+a segment carrying a processing zone.
 
 This coarser level retains the topology that governs routing while reducing the
 state needed to describe a large device. It is a good fit when network-scale
 movement matters more than motion within one segment. A grid is one possible
 architecture at this level; the abstraction itself is a graph of segments and
 junctions.
+
+`GridArchitecture` stores stable segment, endpoint, junction, and
+processing-zone identities. The `square_grid`, `rectangular_grid`, and
+`hexagonal_grid` helpers in `mqt.ionshuttler.grid.layouts` construct common
+physical layouts. The `from_networkx` adapter converts an undirected physical
+layout graph into the same canonical model. It does not retain drawing
+coordinates, colors, or labels.
+
+Each segment exposes a `start` endpoint and an `end` endpoint. A
+`SegmentEndpoint` stores the segment identity and the literal orientation
+`"start"` or `"end"`; the model does not define a separate endpoint enum.
+
+This split also supports a future visual architecture editor. An editor can
+store coordinates and presentation data in a separate geometry document keyed by
+the stable hardware identities. Moving an item on screen will then not change
+routes, schedules, or saved compiler state.
 
 The {doc}`Grid compiler guide <grid_compilers>` introduces the corresponding
 compilation methods.
