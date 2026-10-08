@@ -236,7 +236,7 @@ def test_virtual_gates_keep_same_tick_sequence_order_without_claiming_ions() -> 
 
 
 def test_cycle_requires_a_closed_one_in_one_out_rotation() -> None:
-    """Reject move groups that do not define one atomic cycle."""
+    """Reject move groups that do not define one simultaneous cycle."""
     a = Segment("a")
     b = Segment("b")
     c = Segment("c")

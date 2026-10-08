@@ -55,6 +55,19 @@ def test_grid_actions_round_trip_as_json() -> None:
     assert decode_grid_action(serialized) == cycle
 
 
+def test_grid_actions_have_concise_human_readable_text() -> None:
+    """Show ion movement without replacing the complete debugging representation."""
+    a = Segment("a")
+    b = Segment("b")
+    c = Segment("c")
+    move = JunctionMove(a.end, b.start, (0, 1))
+    cycle = Cycle((JunctionMove(a.end, b.start, (0,)), JunctionMove(b.end, c.start, (1,))))
+
+    assert str(move) == "move [q0,q1] a:end → b:start"
+    assert str(cycle) == "cycle q0:a→b, q1:b→c"
+    assert repr(move).startswith("JunctionMove(")
+
+
 def test_invalid_model_values_are_rejected() -> None:
     """Reject ambiguous identities, capacities, and cycle operands."""
     with pytest.raises(ValueError, match="non-empty"):

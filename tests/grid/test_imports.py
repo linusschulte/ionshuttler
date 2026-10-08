@@ -17,14 +17,31 @@ def test_package_exports_the_hardware_model() -> None:
     package = importlib.import_module("mqt.ionshuttler.grid")
 
     assert package.__all__ == [
+        "CompilationResult",
+        "CompilationStatus",
         "Cycle",
+        "GateTiming",
         "GridArchitecture",
+        "GridCompilationResult",
+        "GridCompiler",
+        "GridCompilerConfig",
+        "GridDiagnostics",
         "GridMachineState",
         "Junction",
         "JunctionMove",
         "ProcessingZone",
+        "Schedule",
+        "ScheduledAction",
         "Segment",
         "SegmentEndpoint",
         "SegmentOccupancy",
         "TransportTiming",
+        "load_result",
+        "load_schedule",
+        "result_from_dict",
+        "result_from_json",
+        "schedule_from_dict",
+        "schedule_from_json",
     ]
+
+    assert package.GridCompiler.__name__ == "GridCompiler"

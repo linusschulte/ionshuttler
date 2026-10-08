@@ -5,7 +5,7 @@
 #
 # Licensed under the MIT License
 
-"""Tests for Grid architecture validation and atomic state changes."""
+"""Tests for Grid architecture validation and simultaneous state changes."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def test_initial_placement_validates_capacity_identity_and_order() -> None:
         architecture.initial_state({"missing": (0,)})
 
 
-def test_atomic_cycle_can_rotate_full_segments() -> None:
+def test_simultaneous_cycle_can_rotate_full_segments() -> None:
     """Accept a legal rotation whose destinations are occupied before the layer."""
     architecture = _cycle_architecture()
     state = architecture.initial_state({"a": (0,), "b": (1,), "c": (2,)})

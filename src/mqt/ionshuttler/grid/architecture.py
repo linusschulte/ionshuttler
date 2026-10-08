@@ -239,7 +239,7 @@ class GridArchitecture:
         state: GridMachineState,
         scheduled_actions: Sequence[ScheduledAction[Any]],
     ) -> GridMachineState:
-        """Validate and atomically apply actions with one common start time.
+        """Validate and jointly apply actions with one common start time.
 
         All actions of the layer are checked against the same state. A move may
         therefore enter a segment that another move of the layer leaves.
@@ -325,7 +325,7 @@ class GridArchitecture:
         """Validate and replay a Grid schedule.
 
         Actions with the same start time form one layer, which
-        :meth:`apply_layer` applies atomically. An invalid schedule raises
+        :meth:`apply_layer` applies as one state transition. An invalid schedule raises
         :class:`ValueError`.
 
         Returns:

@@ -59,6 +59,13 @@ class JunctionMove(Action):
             raise ValueError(msg)
         object.__setattr__(self, "ions", ions)
 
+    def __str__(self) -> str:
+        """Return a concise description for schedule displays."""
+        ions = ",".join(f"q{ion}" for ion in self.ions)
+        source = f"{self.source.segment_id}:{self.source.orientation}"
+        destination = f"{self.destination.segment_id}:{self.destination.orientation}"
+        return f"move [{ions}] {source} → {destination}"
+
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-compatible description of this move."""
         return {
@@ -84,7 +91,7 @@ class JunctionMove(Action):
 
 @dataclass(frozen=True)
 class Cycle(Action):
-    """Apply a closed collection of junction moves atomically."""
+    """Apply a closed collection of junction moves simultaneously."""
 
     moves: tuple[JunctionMove, ...]
     serialized_type: ClassVar[str] = "grid.cycle"
@@ -114,13 +121,22 @@ class Cycle(Action):
         """All ions moved by the cycle."""
         return tuple(ion for move in self.moves for ion in move.ions)
 
+    def __str__(self) -> str:
+        """Return a concise description of the simultaneous rotation."""
+        parts = []
+        for move in self.moves:
+            ions = ",".join(f"q{ion}" for ion in move.ions)
+            label = f"q{move.ions[0]}" if len(move.ions) == 1 else f"[{ions}]"
+            parts.append(f"{label}:{move.source.segment_id}→{move.destination.segment_id}")
+        return f"cycle {', '.join(parts)}"
+
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-compatible description of this cycle."""
         return {"type": self.serialized_type, "moves": [move.to_dict() for move in self.moves]}
 
     @classmethod
     def from_dict(cls, data: Mapping[str, object]) -> Cycle:
-        """Restore an atomic cycle from serialized data.
+        """Restore a simultaneous cycle from serialized data.
 
         Returns:
             The restored cycle.
