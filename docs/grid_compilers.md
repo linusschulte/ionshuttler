@@ -38,18 +38,58 @@ result = GridCompiler(architecture).compile(
 result.validate()
 ```
 
-The compiler uses deterministic breadth-first routing. It can move ordered ion
-chains and can rotate ions simultaneously around a full cycle. It schedules
-ready gates together when they use independent ions and processing zones. Search
-is bounded by {py:class}`mqt.ionshuttler.grid.GridCompilerConfig`. A routing
-failure returns a validated `FAILED` result with the completed schedule prefix.
+The default strategy uses deterministic breadth-first routing. It can move
+ordered ion chains and can rotate ions simultaneously around a full cycle. It
+schedules ready gates together when they use independent ions and processing
+zones. Search is bounded by {py:class}`mqt.ionshuttler.grid.GridCompilerConfig`.
+A routing failure returns a validated `FAILED` result with the completed
+schedule prefix.
 
-This first compiler favors clear behavior and complete search on small
-architectures. It does not yet contain the legacy path, cycle, partitioning,
-home-zone, caching, and priority policies used for larger workloads. The
-hardware model accepts simultaneous cycles with mixed ion-chain sizes, but the
-minimal router generates only cycles made from one-ion moves to keep its
-candidate set bounded.
+Alternatively, the greedy strategy uses a short dependency horizon to select one
+nearby gate for each processing zone. It builds an ion priority from those gates
+and later circuit gates. Several ions can advance toward the same processing
+zone in one timestep. Each transport candidate requests the next segment of a
+shortest route. If that segment is full, the router completes the requested
+junction crossing with a topology cycle or clears the blocked path from its free
+end. The scheduler then accepts compatible transport candidates in priority
+order.
+
+Independent gates and transport actions can share a timestep. Transport on
+unrelated resources can also continue while a longer gate remains active. The
+greedy strategy assigns each gate to the nearest reachable processing zone that
+supports it. A two-ion gate keeps this assignment while its operands move. The
+greedy scheduler retains operands that are already at the processing zone for a
+selected gate. Other ions on the processing-zone segment can leave while a gate
+runs.
+
+```python
+from mqt.ionshuttler.grid import GridCompilerConfig, GridCompilerStrategy
+
+compiler = GridCompiler(
+    architecture,
+    GridCompilerConfig(
+        strategy=GridCompilerStrategy.GREEDY,
+        allowed_junction_crossings=frozenset({("memory", "processor")}),
+    ),
+)
+result = compiler.compile(
+    circuit,
+    initial_placement={"memory": (0, 1)},
+)
+```
+
+`allowed_junction_crossings` is an optional routing policy. It can describe
+one-way circulation without making transport direction a property of the Grid
+hardware model.
+
+The breadth-first strategy favors complete search on small architectures. The
+greedy strategy favors bounded local work and concurrent transport. It does not
+yet provide the path, hybrid, partitioning, or path-cache policies available in
+the established heuristic tools. The hardware model accepts simultaneous cycles
+with mixed ion-chain sizes, but the greedy router generates cycles from one-ion
+moves to keep its candidate set bounded. The compiler façade delegates to
+separate breadth-first and greedy schedulers, so a new strategy does not add
+another branch to the scheduling loop.
 
 ## Exact compilation
 
@@ -87,7 +127,7 @@ fine-grained tabu partitioner is available from
 ## Interface status
 
 The established tools keep their command-line and JSON interfaces. The common
-Grid compiler is a separate API. It does not adapt into the legacy mutable run
+Grid compiler is a separate API. It does not adapt into the old mutable run
 loop. Existing grid workflows remain available while their policies move to the
 new compiler.
 

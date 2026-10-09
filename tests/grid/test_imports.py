@@ -25,6 +25,7 @@ def test_package_exports_the_hardware_model() -> None:
         "GridCompilationResult",
         "GridCompiler",
         "GridCompilerConfig",
+        "GridCompilerStrategy",
         "GridDiagnostics",
         "GridMachineState",
         "Junction",

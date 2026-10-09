@@ -10,6 +10,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
+
+
+class GridCompilerStrategy(StrEnum):
+    """Select how the compiler chooses transport actions."""
+
+    BREADTH_FIRST = "breadth_first"
+    GREEDY = "greedy"
 
 
 @dataclass(frozen=True)
@@ -17,14 +25,36 @@ class GridCompilerConfig:
     """Bound the deterministic Grid compiler.
 
     ``max_iterations`` bounds scheduling progress. ``max_routing_states``
-    bounds each search for a route to a processing zone.
+    bounds each breadth-first search or greedy candidate evaluation.
+    ``allowed_junction_crossings`` optionally limits routing to directed segment
+    pairs without changing the hardware topology.
     """
 
+    strategy: GridCompilerStrategy = GridCompilerStrategy.BREADTH_FIRST
+    allowed_junction_crossings: frozenset[tuple[str, str]] | None = None
     max_iterations: int = 10_000
     max_routing_states: int = 10_000
 
     def __post_init__(self) -> None:
-        """Validate compiler limits."""
+        """Validate compiler settings.
+
+        Raises:
+            TypeError: If a strategy setting does not use its enum type.
+        """
+        if not isinstance(self.strategy, GridCompilerStrategy):
+            msg = "strategy must be a GridCompilerStrategy"
+            raise TypeError(msg)
+        if self.allowed_junction_crossings is not None:
+            crossings = frozenset(self.allowed_junction_crossings)
+            if any(
+                not isinstance(crossing, tuple)
+                or len(crossing) != 2
+                or any(not isinstance(segment_id, str) or not segment_id for segment_id in crossing)
+                for crossing in crossings
+            ):
+                msg = "allowed_junction_crossings must contain pairs of segment identifiers"
+                raise TypeError(msg)
+            object.__setattr__(self, "allowed_junction_crossings", crossings)
         _require_positive_int(self.max_iterations, "max_iterations")
         _require_positive_int(self.max_routing_states, "max_routing_states")
 
@@ -35,4 +65,4 @@ def _require_positive_int(value: object, name: str) -> None:
         raise ValueError(msg)
 
 
-__all__ = ["GridCompilerConfig"]
+__all__ = ["GridCompilerConfig", "GridCompilerStrategy"]
