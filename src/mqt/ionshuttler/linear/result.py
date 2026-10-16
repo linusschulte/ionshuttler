@@ -74,6 +74,10 @@ class LinearDiagnostics:
             "preferred_gate_zones": [list(assignment) for assignment in self.preferred_gate_zones],
         }
 
+    def statistics(self) -> tuple[tuple[str, int | float | str], ...]:
+        """Return the search score and the number of explored nodes."""
+        return (("Score", self.score), ("Explored nodes", self.explored_nodes))
+
     @classmethod
     def from_dict(cls, data: object) -> LinearDiagnostics:
         """Restore Linear diagnostics.

@@ -36,13 +36,11 @@ from mqt.ionshuttler.linear.replay import replay_schedule
 from mqt.ionshuttler.linear.result import LinearDiagnostics
 from mqt.ionshuttler.linear.schedule import LinearMachineState, schedule_from_path
 from mqt.ionshuttler.linear.state import AdvanceTime, create_initial_state
-from mqt.ionshuttler.visualization import LinearVisualizer, Visualizer
+from mqt.ionshuttler.visualization import LinearView, LinearVisualizer, Visualizer
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from pathlib import Path
-
-    from matplotlib.figure import Figure
 
     from mqt.ionshuttler.linear.state import SearchTransition
 
@@ -120,6 +118,13 @@ def test_linear_diagnostics_reject_malformed_json(assignments: object, message: 
     """Reject malformed gate-zone assignments at the JSON boundary."""
     with pytest.raises(ValueError, match=message):
         LinearDiagnostics.from_dict({"score": 0, "explored_nodes": 0, "preferred_gate_zones": assignments})
+
+
+def test_linear_diagnostics_report_the_search_statistics() -> None:
+    """Name the score and the explored nodes for people, without the zone plan."""
+    diagnostics = LinearDiagnostics(score=3, explored_nodes=12, preferred_gate_zones=((0, "pz"),))
+
+    assert diagnostics.statistics() == (("Score", 3), ("Explored nodes", 12))
 
 
 def test_schedule_round_trips_identity_and_machine_metadata() -> None:
@@ -279,7 +284,7 @@ def test_visualizer_protocol_supports_explicit_visualizers() -> None:
     assert visualizer.visualize(result) == ("view", result)
 
 
-def test_result_visualization_builds_linear_trajectory_plot() -> None:
+def test_trajectory_plot_shows_ion_motion_zones_and_gates() -> None:
     """Plot ion motion, processing zones, and gates on one time-site axis."""
     pyplot = pytest.importorskip("matplotlib.pyplot")
     architecture = LinearArchitecture(
@@ -306,7 +311,7 @@ def test_result_visualization_builds_linear_trajectory_plot() -> None:
         final_state=architecture.replay_schedule(program),
     )
 
-    figure = cast("Figure", visualize(result))
+    figure = LinearVisualizer.plot_trajectories(result)
 
     assert len(figure.axes) == 1
     axis = figure.axes[0]
@@ -327,7 +332,6 @@ def test_result_visualization_builds_linear_trajectory_plot() -> None:
 
 def test_linear_visualizer_is_available_as_a_concrete_adapter() -> None:
     """Expose the built-in visualizer for direct use and extension examples."""
-    pyplot = pytest.importorskip("matplotlib.pyplot")
     program = _program()
     result = CompilationResult(
         status=CompilationStatus.SUCCESS,
@@ -336,10 +340,7 @@ def test_linear_visualizer_is_available_as_a_concrete_adapter() -> None:
         final_state=program.initial_state,
     )
 
-    figure = cast("Figure", LinearVisualizer().visualize(result))
-
-    assert len(figure.axes) == 1
-    pyplot.close(figure)
+    assert isinstance(LinearVisualizer().visualize(result), LinearView)
 
 
 def test_visualization_package_exports_its_supported_api() -> None:
@@ -349,6 +350,7 @@ def test_visualization_package_exports_its_supported_api() -> None:
         "GridVisualizer",
         "IonColor",
         "JunctionCoordinates",
+        "LinearView",
         "LinearVisualizer",
         "Visualizer",
         "open_viewer",
@@ -371,8 +373,7 @@ def test_visualization_rejects_an_unsupported_architecture() -> None:
 
 
 def test_result_visualization_accepts_architecture_subclasses() -> None:
-    """Route a derived Linear architecture to the built-in schematic."""
-    pyplot = pytest.importorskip("matplotlib.pyplot")
+    """Route a derived Linear architecture to the built-in Linear view."""
 
     class DerivedArchitecture(LinearArchitecture):
         """Linear architecture used to check subclass dispatch."""
@@ -385,13 +386,10 @@ def test_result_visualization_accepts_architecture_subclasses() -> None:
         final_state=program.initial_state,
     )
 
-    figure = cast("Figure", visualize(result))
-
-    assert len(figure.axes) == 1
-    pyplot.close(figure)
+    assert isinstance(visualize(result), LinearView)
 
 
-def test_result_visualization_wraps_long_timelines() -> None:
+def test_trajectory_plot_wraps_long_timelines() -> None:
     """Fold on five-tick boundaries and preserve one physical timestep scale."""
     pyplot = pytest.importorskip("matplotlib.pyplot")
     architecture = LinearArchitecture(num_sites=2, processing_zones={"pz": [0, 1]})
@@ -404,7 +402,7 @@ def test_result_visualization_wraps_long_timelines() -> None:
         final_state=architecture.replay_schedule(program),
     )
 
-    figure = cast("Figure", visualize(result))
+    figure = LinearVisualizer.plot_trajectories(result)
 
     assert len(figure.axes) > 1
     windows = tuple(axis.get_xlim() for axis in figure.axes)
